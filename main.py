@@ -7,12 +7,17 @@ from dotenv import load_dotenv
 import os
 import re
 from datetime import datetime
+from pypdf import PdfReader
+from io import BytesIO
+from fastapi import FastAPI, HTTPException, UploadFile, File, Security, Depends, Header
 
 import chromadb
 from llama_index.core import VectorStoreIndex, StorageContext, Document
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.mistralai import MistralAI
+from llama_index.core import SimpleDirectoryReader
+from llama_index.core import VectorStoreIndex, StorageContext, Document, SimpleDirectoryReader
 
 # ========================
 # ENV + CLIENT SETUP
@@ -162,7 +167,9 @@ async def create_division(data: NewDivision):
     DIVISIONS.append({"id": div_id, "name": data.name, "description": data.description})
     return {"id": div_id, "name": data.name, "description": data.description}
 
-
+# ========================
+# ENDPOINT: UPLOAD FILE 
+# ========================
 @app.put("/division/{div_id}")
 async def update_division_description(div_id: str, data: UpdateDivisionDescription):
     global DIVISIONS
@@ -201,24 +208,25 @@ async def delete_division(div_id: str):
     return {"detail": "Divisi dihapus"}
 
 
-# ========================
-# ENDPOINT: UPLOAD FILE KE CHROMA
-# ========================
 @app.post("/upload/{division_id}")
 async def upload_file(division_id: str, file: UploadFile = File(...)):
     """
-    Menerima file (txt/pdf/docx), ekstrak teks sederhana dan index ke Chroma
-    Catatan: di contoh ini, hanya dukung .txt biar simpel.
+    Menerima file, MENGHAPUS isi collection lama (jika ada), 
+    lalu mengupload dan mengindex file baru.
     """
+    global DOCUMENTS # Kita perlu akses global variable untuk update list dokumen di memori
+
+    # 1. Validasi Ekstensi
     if not file.filename.endswith(".pdf"):
         raise HTTPException(
             status_code=400,
             detail="Demo ini hanya mendukung file .pdf"
         )
 
+    # 2. Baca File
     content_bytes = await file.read()
     
-    # Simpan file fisik ke folder data/
+    # 3. Simpan file fisik (Opsional: overwrite file lama jika nama sama)
     if not os.path.exists("data"):
         os.makedirs("data")
         
@@ -226,23 +234,58 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content_bytes)
         
+    # 4. Decode text
     try:
         text = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
         text = content_bytes.decode("latin-1")
 
-    # buat Document dan masukkan ke index
+    # ====================================================
+    # LOGIKA BARU: HAPUS ISI LAMA (RESET COLLECTION)
+    # ====================================================
+    try:
+        # Ambil collection berdasarkan division_id
+        coll = client.get_collection(division_id)
+        
+        # Ambil semua data (kita butuh ID-nya untuk menghapus)
+        existing_data = coll.get()
+        existing_ids = existing_data.get('ids', [])
+
+        if existing_ids:
+            # Jika ada isinya, hapus berdasarkan ID
+            print(f"Menghapus {len(existing_ids)} dokumen lama dari divisi {division_id}...")
+            coll.delete(ids=existing_ids)
+            
+            # PENTING: Hapus juga metadata file lama dari variable global DOCUMENTS
+            # supaya data di dashboard 'Stats' sinkron dengan isi Chroma
+            DOCUMENTS = [doc for doc in DOCUMENTS if doc["division_id"] != division_id]
+
+    except Exception as e:
+        # Jika collection belum ada (error), tidak masalah, lanjut buat baru di bawah
+        print(f"Collection belum ada atau error saat clear data: {e}")
+        pass
+
+    # ====================================================
+    # LANJUTKAN PROSES UPLOAD SEPERTI BIASA
+    # ====================================================
+
+    # Buat Document LlamaIndex
     doc = Document(text=text, metadata={"filename": file.filename, "division": division_id})
+    
+    # Dapatkan index (ini akan memakai collection yang sudah dikosongkan tadi)
     index = get_index_for_division(division_id)
+    
+    # Masukkan data baru
     index.insert(doc)
 
+    # Update Global Documents List dengan file baru
     DOCUMENTS.append({
         "filename": file.filename,
         "division_id": division_id,
         "uploaded_at": datetime.now().isoformat()
     })
 
-    return {"detail": "File diupload dan diindex ke Chroma"}
+    return {"detail": f"Data lama dihapus. File {file.filename} berhasil diupload dan diindex."}
 
 
 # ========================
