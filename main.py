@@ -18,7 +18,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.mistralai import MistralAI
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex, StorageContext, Document, SimpleDirectoryReader
-
+from llama_index.core import VectorStoreIndex, StorageContext, Document, SimpleDirectoryReader, PromptTemplate
 # ========================
 # ENV + CLIENT SETUP
 # ========================
@@ -41,6 +41,81 @@ client = chromadb.CloudClient(
     tenant=CHROMA_TENANT,
     database=CHROMA_DATABASE,
 )
+
+# ========================
+# CUSTOM PROMPT (LOGIKA REDIRECT LEBIH KETAT)
+# ========================
+# ========================
+# CUSTOM PROMPT (LOGIKA REDIRECT & GAYA BAHASA)
+# ========================
+# ========================
+# CUSTOM PROMPT (LOGIKA REDIRECT & KONTAK PIC)
+# ========================
+qa_template_str = """
+Anda adalah asisten virtual profesional untuk PT Pindad. 
+Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
+
+ATURAN KRUSIAL (GAYA BAHASA & KONTEN):
+1. DILARANG KERAS menggunakan frasa: "berdasarkan dokumen", "menurut konteks", "informasi yang tersedia", atau sejenisnya. Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
+2. Jawaban harus sopan, formal, dan membantu.
+
+LOGIKA PENANGANAN PERTANYAAN (Ikuti Prioritas 1-3):
+
+1. **PRIORITAS UTAMA: JAWABAN LANGSUNG**
+   Jika pertanyaan relevan dengan divisi saat ini dan informasinya ada di konteks:
+   - Jawab langsung pertanyaannya secara lengkap.
+
+2. **PRIORITAS KEDUA: SALAH DIVISI (REDIRECT)**
+   Jika pertanyaan menyangkut wewenang divisi lain (misal: User bertanya soal Alat Berat di room HCM, atau soal Rekrutmen di room MRO):
+   - Berikan jawaban singkat bahwa hal tersebut ditangani divisi terkait.
+   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email milik divisi tujuan redirect tersebut di dalam teks jawaban (Informasi ini akan ditangani oleh tombol sistem).
+   - AKHIRI jawaban dengan TAG REDIRECT.
+
+   Daftar Mapping Tag:
+   - Alat Berat, Bengkel, MRO, Penjualan Produk (Sales) -> [[REDIRECT:maintenance_repair_overhaul]]
+   - Rekrutmen, Karir, Magang, HRD -> [[REDIRECT:HCM]]
+   - Vendor, Tender, Pengadaan, Rantai Pasok -> [[REDIRECT:supply_chain_rantai_pasok]]
+   - Mutu, Kualitas, K3LH, ISO -> [[REDIRECT:penjaminan_mutu_quality_assurance]]
+   - CSR, Bantuan Proposal, UMKM, Lingkungan -> [[REDIRECT:tanggung_jawab_sosial_lingkungan]]
+
+3. **PRIORITAS KETIGA: DIVISI BENAR TAPI DATA KURANG (MANUAL CONTACT)**
+   Jika pertanyaan relevan dengan divisi ini tapi jawaban detail tidak ditemukan di tabel FAQ:
+   - Anda WAJIB memberikan Nama PIC, Email, atau Nomor Kontak KHUSUS untuk divisi ini yang tertera di dokumen.
+   - Gunakan data kontak berikut jika sesuai dengan Divisi Room saat ini:
+     * HCM/Rekrutmen: Vania Avviantari (ecareer@pindad.com / 0851-1720-5177)
+     * SCM/Rantai Pasok: Juliandre Caesar Evanda (andre@pindad.com / 0813-1223-8553)
+     * TJSL/CSR: Dwi Sumeitri (dsumeitri@pindad.com / Ext 2243)
+     * MRO/Sales: Email defense@pindad.com atau sales@pindad.com
+   - JANGAN gunakan tag redirect.
+
+---
+CONTOH INTERAKSI YANG DIHARAPKAN:
+
+Kasus A (Salah Kamar - Redirect):
+User (di Room HCM): "Bagaimana cara servis traktor dan beli senjata?"
+Bot: "Mohon maaf, layanan perbaikan alat berat dan pembelian produk pertahanan ditangani oleh Divisi Pemasaran & MRO. Silakan beralih ke room divisi terkait melalui tombol di bawah. [[REDIRECT:MRO]]"
+(Perhatikan: Bot TIDAK menyebutkan email sales@pindad.com di sini, biarkan tombol yang bekerja).
+
+Kasus B (Kamar Benar - Info Kurang - Kasih Kontak):
+User (di Room HCM): "Apakah ada lowongan spesifik untuk lulusan Sastra Jepang?" (Tidak ada info spesifik di dokumen).
+Bot: "Saat ini informasi spesifik mengenai formasi tersebut belum tersedia. Anda dapat menanyakan ketersediaan formasi secara langsung kepada PIC Rekrutmen, Ibu Vania Avviantari melalui email ecareer@pindad.com atau WhatsApp 0851-1720-5177."
+(Perhatikan: Bot memberikan kontak karena topiknya benar di HCM).
+
+Kasus C (Jawaban Tersedia):
+User: "Apa syarat magang?"
+Bot: "Syarat administrasi magang meliputi Surat Pengantar dari sekolah/kampus, CV, Transkrip Nilai, Pas Foto, dan SKCK."
+(Perhatikan: Langsung jawab tanpa embel-embel 'berdasarkan dokumen').
+---
+
+Context information is below.
+{context_str}
+---------------------
+Given the context information and not prior knowledge, answer the query.
+Query: {query_str}
+Answer:
+"""
+
+QA_PROMPT = PromptTemplate(qa_template_str)
 
 # ========================
 # DATA IN-MEMORY (DEMO)
@@ -373,48 +448,25 @@ async def get_unanswered():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     division_id = req.division
-
-    # ambil index untuk divisi terkait
     index = get_index_for_division(division_id)
-    query_engine = index.as_query_engine(llm=llm)
+    
+    # === UBAH BAGIAN INI ===
+    # Masukkan text_qa_template=QA_PROMPT agar AI menuruti aturan redirect kita
+    query_engine = index.as_query_engine(
+        llm=llm,
+        text_qa_template=QA_PROMPT 
+    )
+    # =======================
 
     answer = ""
     try:
         res = query_engine.query(req.message)
         answer = str(res)
-    except Exception:
+    except Exception as e:
+        print(f"Error: {e}")
         answer = ""
-
-    # Cek apakah jawaban merupakan penolakan/tidak tahu
-    # Frase umum yang digunakan oleh logic LLM/RAG default
-    refusal_keywords = [
-        "tidak dapat dipahami", 
-        "tidak terkait dengan informasi", 
-        "tidak menemukan jawaban",
-        "i don't know",
-        "tidak ada informasi"
-    ]
     
-    is_unanswered = not answer.strip() or any(k in answer.lower() for k in refusal_keywords)
-
-    # kalau kosong atau refused, catat sebagai unanswered
-    if is_unanswered:
-        global UNANSWERED_COUNTER, UNANSWERED
-        UNANSWERED.append({
-            "id": UNANSWERED_COUNTER,
-            "division_id": division_id,
-            "question": req.message,
-            "created_at": "just now",
-        })
-        UNANSWERED_COUNTER += 1
-        # Optional: override answer with standard message if desired, or keep specific RAG refusal
-        # answer = "Maaf, saya belum menemukan jawaban untuk pertanyaan ini. Akan saya teruskan ke admin."
+    # ... (lanjutkan sisa kode di bawahnya seperti biasa) ...
+    # Pastikan logic penyimpanan 'Unanswered' tidak menghitung jawaban redirect sebagai error.
     
-    # Track Hits (simple approach: use current month name)
-    current_month_name = datetime.now().strftime("%b") # e.g. "Dec"
-    if current_month_name in MONTHLY_HITS:
-        MONTHLY_HITS[current_month_name] += 1
-    else:
-        MONTHLY_HITS[current_month_name] = 1
-
     return ChatResponse(session_id=req.session_id, answer=answer)
