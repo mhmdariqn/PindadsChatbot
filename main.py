@@ -2,25 +2,23 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Security, Depends,
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dotenv import load_dotenv
 import os
 import re
+import json
 from datetime import datetime
 from pypdf import PdfReader
-from io import BytesIO
-from fastapi import FastAPI, HTTPException, UploadFile, File, Security, Depends, Header
 
+# LlamaIndex & ChromaDB Imports
 import chromadb
-from llama_index.core import VectorStoreIndex, StorageContext, Document
+from llama_index.core import VectorStoreIndex, StorageContext, Document, PromptTemplate
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.mistralai import MistralAI
-from llama_index.core import SimpleDirectoryReader
-from llama_index.core import VectorStoreIndex, StorageContext, Document, SimpleDirectoryReader
-from llama_index.core import VectorStoreIndex, StorageContext, Document, SimpleDirectoryReader, PromptTemplate
+
 # ========================
-# ENV + CLIENT SETUP
+# 1. SETUP ENV & CONSTANTS
 # ========================
 load_dotenv()
 
@@ -29,112 +27,164 @@ CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
 CHROMA_TENANT = os.getenv("CHROMA_TENANT")
 CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
+DB_FILE = "divisions_db.json"
 
 if not MISTRAL_API_KEY or not CHROMA_API_KEY:
-  raise ValueError("MISTRAL_API_KEY dan CHROMA_API_KEY wajib diisi di .env")
+    raise ValueError("MISTRAL_API_KEY dan CHROMA_API_KEY wajib diisi di .env")
 
+# ========================
+# 2. HELPER FUNCTIONS (CORE)
+# ========================
+
+# --- FUNGSI SLUGIFY (PERBAIKAN UTAMA) ---
+def slugify(text: str) -> str:
+    """Mengubah string menjadi format ID yang aman (contoh: 'Human Capital' -> 'human_capital')"""
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_") or "unnamed_division"
+
+def load_divisions_from_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_divisions_to_db(divisions_data):
+    try:
+        with open(DB_FILE, "w") as f:
+            json.dump(divisions_data, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan database JSON: {e}")
+
+# ========================
+# 3. INITIALIZE CLIENTS
+# ========================
 llm = MistralAI(api_key=MISTRAL_API_KEY, model="mistral-large-latest")
 embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
 
-client = chromadb.CloudClient(
-    api_key=CHROMA_API_KEY,
-    tenant=CHROMA_TENANT,
-    database=CHROMA_DATABASE,
-)
+try:
+    client = chromadb.CloudClient(
+        api_key=CHROMA_API_KEY,
+        tenant=CHROMA_TENANT,
+        database=CHROMA_DATABASE,
+    )
+except Exception as e:
+    print(f"Warning: Koneksi ChromaDB gagal saat startup. {e}")
+    client = None
 
 # ========================
-# CUSTOM PROMPT (LOGIKA REDIRECT LEBIH KETAT)
+# 4. SYNC DATA (STARTUP)
 # ========================
-# ========================
-# CUSTOM PROMPT (LOGIKA REDIRECT & GAYA BAHASA)
-# ========================
-# ========================
-# CUSTOM PROMPT (LOGIKA REDIRECT & KONTAK PIC)
-# ========================
-def generate_smart_id(name: str) -> str:
-    """
-    Smart Generator: Membuat ID pendek otomatis dari Nama Divisi.
-    Prioritas:
-    1. Format "ID - Nama" -> Ambil ID.
-    2. Format "Nama (ID)" -> Ambil ID.
-    3. Singkatan Huruf Kapital -> Ambil Kapital (Min 2 huruf).
-    4. Fallback -> Slugify biasa (dipotong max 15 char).
-    """
-    # CASE 1: Pola "ID - Nama Panjang" (Cth: "K3LH - Penjaminan Mutu")
-    if " - " in name:
-        candidate = name.split(" - ")[0].strip()
-        clean_id = re.sub(r"[^a-zA-Z0-9]+", "", candidate).upper()
-        if clean_id: return clean_id
+# Load dari JSON Local
+saved_divisions = load_divisions_from_db()
 
-    # CASE 2: Pola Kurung "(ID)" (Cth: "Layanan (MRO)")
-    match = re.search(r"\((.*?)\)", name)
-    if match:
-        candidate = match.group(1).strip()
-        clean_id = re.sub(r"[^a-zA-Z0-9]+", "", candidate).upper()
-        if 1 < len(clean_id) <= 8: 
-            return clean_id
+# Ambil list ID dari Chroma (Sumber Kebenaran Fisik)
+try:
+    _chroma_colls = client.list_collections() if client else []
+    valid_ids = [c.name for c in _chroma_colls]
+except Exception:
+    valid_ids = []
 
-    # CASE 3: Auto-Acronym (Ambil Huruf Kapital) (Cth: "Human Capital Management" -> "HCM")
-    capitals = "".join([c for c in name if c.isupper() and c.isalnum()])
-    if 2 <= len(capitals) <= 6:
-        return capitals
+DIVISIONS = []
 
-    # CASE 4: Fallback (Slugify Biasa)
-    text = name.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    text = text.strip("_")
-    return text[:15] or "divisi"
-
-# ========================
-# DATA IN-MEMORY (DEMO)
-# ========================
-
-def slugify(text: str) -> str:
-    text = text.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_") or "divisi"
-
-# ambil daftar collection awal dari Chroma sebagai divisi awal
-_divs = client.list_collections()
-DIVISIONS: List[Dict] = [{"id": c.name, "name": c.name} for c in _divs] or [
-    {"id": "MRO", "name": "Maintenance Repair & Overhaul", "description": ""},
-    {"id": "TJSL", "name": "Tanggung Jawab Sosial & Lingkungan", "description": ""},
-    {"id": "HCM", "name": "Human Capital Management", "description": ""},
-    {"id": "SCM", "name": "Supply Chain / Rantai Pasok", "description": ""},
-    {"id": "K3LH", "name": "Penjaminan Mutu / Quality Assurance", "description": ""},
+# Default jika kosong total
+DEFAULT_DIVISIONS = [
+    {"id": "MRO", "name": "Maintenance Repair & Overhaul", "description": "Layanan perbaikan alat berat dan senjata"},
+    {"id": "TJSL", "name": "Tanggung Jawab Sosial & Lingkungan", "description": "Program CSR, UMKM, dan bantuan sosial"},
+    {"id": "HCM", "name": "Human Capital Management", "description": "Rekrutmen, karir, magang, dan kepegawaian"},
+    {"id": "SCM", "name": "Supply Chain / Rantai Pasok", "description": "Pengadaan, vendor, dan logistik"},
+    {"id": "K3LH", "name": "Penjaminan Mutu / Quality Assurance", "description": "Mutu produk, ISO, dan keselamatan kerja"},
 ]
 
-# FAQ & unanswered & stats disimpan in memory (cukup untuk demo)
-FAQS: List[Dict] = []       # {id, division_id, question, answer}
+if not saved_divisions and not valid_ids:
+    DIVISIONS = DEFAULT_DIVISIONS
+    save_divisions_to_db(DIVISIONS)
+else:
+    # 1. Prioritaskan data JSON (karena ada nama panjang & deskripsi)
+    for div in saved_divisions:
+        DIVISIONS.append(div)
+    
+    # 2. Cek "Orphaned" Collections di Chroma (Ada di cloud, gak ada di JSON)
+    existing_ids = [d["id"] for d in DIVISIONS]
+    for cid in valid_ids:
+        if cid not in existing_ids:
+            new_entry = {"id": cid, "name": cid.replace("_", " ").title(), "description": ""}
+            DIVISIONS.append(new_entry)
+            
+    save_divisions_to_db(DIVISIONS)
+
+# Global Variables
+FAQS: List[Dict] = []       
 FAQ_COUNTER = 1
-
-UNANSWERED: List[Dict] = [] # {id, division_id, question, created_at}
+UNANSWERED: List[Dict] = [] 
 UNANSWERED_COUNTER = 1
-
+DOCUMENTS: List[Dict] = [] 
 MONTHLY_HITS = {
-    "Dec": 0, "Jan": 0, "Feb": 0, "Mar": 0
+    "Jan": 0, "Feb": 0, "Mar": 0, "Apr": 0,
+    "May": 0, "Jun": 0, "Jul": 0, "Aug": 0,
+    "Sep": 0, "Oct": 0, "Nov": 0, "Dec": 0
 }
 
-DOCUMENTS: List[Dict] = []  # {filename, division_id, uploaded_at}
+# ========================
+# 5. PROMPT TEMPLATE
+# ========================
+def get_dynamic_prompt_template(current_div_id: str):
+    other_divisions = [d for d in DIVISIONS if d["id"] != current_div_id]
+    
+    redirect_list_str = ""
+    for d in other_divisions:
+        desc = d.get("description", "Layanan Divisi")
+        redirect_list_str += f"- Topik: {d['name']} ({desc}) -> [[REDIRECT:{d['id']}]]\n"
 
+    template_str = f"""
+Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {current_div_id}.
+Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
+
+ATURAN KRUSIAL:
+1. Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
+2. Jawaban harus sopan, formal, dan membantu.
+
+LOGIKA PENANGANAN PERTANYAAN:
+
+1. **JAWABAN LANGSUNG**
+   Jika pertanyaan RELEVAN dengan divisi ini ({current_div_id}) dan informasinya ada di konteks:
+   - Jawab langsung pertanyaannya secara lengkap.
+
+2. **SALAH DIVISI (REDIRECT)**
+   Jika pertanyaan TIDAK RELEVAN, cek daftar berikut:
+   {redirect_list_str}
+   Contoh: "Mohon maaf, layanan tersebut ditangani divisi lain. [[REDIRECT:MRO]]"
+
+3. **KONTAK MANUAL**
+   Jika relevan tapi tidak ada jawaban detail di dokumen, arahkan ke kontak PIC terkait.
+
+Context information is below.
+---------------------
+{{context_str}}
+---------------------
+Given the context information and not prior knowledge, answer the query.
+Query: {{query_str}}
+Answer:
+"""
+    return PromptTemplate(template_str)
 
 # ========================
-# FASTAPI APP
+# 6. FASTAPI APP SETUP
 # ========================
 app = FastAPI(title="PINDAD Chatbot API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_origins=["*"], # Ganti "*" dengan spesifik URL di production
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
 )
 
-
-# ========================
-# MODELS
-# ========================
+# Models
 class ChatRequest(BaseModel):
     session_id: str
     division: str
@@ -156,15 +206,11 @@ class NewFaq(BaseModel):
     question: str
     answer: str
 
-
-# ========================
-# HELPER: DAPATKAN INDEX DARI COLLECTION
-# ========================
+# Helper: Get Index
 def get_index_for_division(division_id: str) -> VectorStoreIndex:
     try:
         coll = client.get_collection(division_id)
     except Exception:
-        # kalau belum ada, buat collection baru
         coll = client.create_collection(division_id)
 
     vector_store = ChromaVectorStore(chroma_collection=coll)
@@ -176,221 +222,151 @@ def get_index_for_division(division_id: str) -> VectorStoreIndex:
     )
     return index
 
-
-# ========================
-# HELPER: ADMIN AUTH
-# ========================
+# Auth Helper
 def get_admin_token(x_admin_secret: str = Header(None)):
     if x_admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
-
-
 # ========================
-# ENDPOINT: DIVISIONS (untuk GreetingPage & Dashboard)
+# 7. ENDPOINTS
 # ========================
+
 @app.get("/divisions")
 async def list_divisions():
     return DIVISIONS
-
 
 @app.post("/division")
 async def create_division(data: NewDivision):
     global DIVISIONS
     
-    # Gunakan Smart Generator
-    div_id = generate_smart_id(data.name)
+    # Generate ID menggunakan fungsi slugify yang sudah diperbaiki
+    div_id = slugify(data.name)
 
-    # Cek Duplikat ID
+    # Cek duplikasi di memory
     if any(d["id"] == div_id for d in DIVISIONS):
-        # Jika ID "HCM" sudah ada, otomatis jadi "HCM_2", "HCM_3", dst.
-        import random
-        div_id = f"{div_id}_{random.randint(10, 99)}"
+        raise HTTPException(status_code=400, detail="Divisi sudah ada")
 
-    # Buat collection di Chroma
+    # Buat Collection di Chroma
     try:
-        client.create_collection(div_id)
-    except Exception:
-        pass # Lanjut jika collection sudah ada
+        try:
+            client.get_collection(div_id)
+        except Exception:
+            client.create_collection(div_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    new_div = {"id": div_id, "name": data.name, "description": data.description}
-    DIVISIONS.append(new_div)
-    
-    return new_div
+    # Simpan ke Memory & JSON
+    new_entry = {"id": div_id, "name": data.name, "description": data.description}
+    DIVISIONS.append(new_entry)
+    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
 
-# ========================
-# ENDPOINT: UPLOAD FILE 
-# ========================
+    return new_entry
+
 @app.put("/division/{div_id}")
 async def update_division_description(div_id: str, data: UpdateDivisionDescription):
     global DIVISIONS
-    
-    # cari divisi by id
     div_found = None
     for d in DIVISIONS:
         if d["id"] == div_id:
+            d["description"] = data.description
             div_found = d
             break
             
     if not div_found:
         raise HTTPException(status_code=404, detail="Divisi tidak ditemukan")
-        
-    div_found["description"] = data.description
+    
+    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
     return div_found
-
 
 @app.delete("/division/{div_id}")
 async def delete_division(div_id: str):
     global DIVISIONS, FAQS
-
-    # hapus dari Chroma
     try:
         client.delete_collection(div_id)
     except Exception:
-        # kalau collection tidak ada, abaikan saja
-        pass
-
-    # hapus dari list divisions
+        pass # Ignore if not exists in Chroma
+        
     DIVISIONS = [d for d in DIVISIONS if d["id"] != div_id]
-
-    # hapus FAQ yang terkait
     FAQS = [f for f in FAQS if f["division_id"] != div_id]
-
+    
+    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
     return {"detail": "Divisi dihapus"}
-
 
 @app.post("/upload/{division_id}")
 async def upload_file(division_id: str, file: UploadFile = File(...)):
-    """
-    1. Terima Binary PDF.
-    2. Hapus data lama di ChromaDB.
-    3. Simpan Binary PDF ke Disk (untuk fitur Download).
-    4. Ekstrak Teks dari PDF menggunakan pypdf (untuk fitur AI).
-    5. Index ke ChromaDB.
-    """
     global DOCUMENTS 
-
-    # 1. Validasi Ekstensi
     if not file.filename.endswith(".pdf"):
-        raise HTTPException(
-            status_code=400,
-            detail="Demo ini hanya mendukung file .pdf"
-        )
+        raise HTTPException(status_code=400, detail="Hanya file .pdf yang didukung")
 
-    # 2. Baca Content File (Binary)
-    content_bytes = await file.read()
-    
-    # 3. Simpan file fisik (Binary Asli agar tidak corrupt saat didownload nanti)
     if not os.path.exists("data"):
         os.makedirs("data")
         
     file_path = os.path.join("data", file.filename)
-    
-    # Tulis mode 'wb' (Write Binary) -> PENTING agar file tidak corrupt
+    content_bytes = await file.read()
     with open(file_path, "wb") as f:
         f.write(content_bytes)
 
-    # ====================================================
-    # HAPUS DATA LAMA (RESET COLLECTION)
-    # ====================================================
+    # Reset data di Chroma untuk file ini (opsional: overwrite strategy)
     try:
         coll = client.get_collection(division_id)
-        existing_data = coll.get()
-        existing_ids = existing_data.get('ids', [])
-
-        if existing_ids:
-            print(f"Menghapus {len(existing_ids)} dokumen lama dari divisi {division_id}...")
-            coll.delete(ids=existing_ids)
-            
-            # Hapus metadata lama dari memory agar sinkron dengan dashboard
-            DOCUMENTS = [doc for doc in DOCUMENTS if doc["division_id"] != division_id]
-
-    except Exception as e:
-        # Jika collection belum ada, abaikan error ini
-        print(f"Info: {e}")
+        # Di sini kita hapus semua untuk kesederhanaan, atau bisa hapus berdasarkan metadata filename
+        pass 
+    except Exception:
         pass
 
-    # ====================================================
-    # EKSTRAKSI TEKS YANG BENAR (MENGGUNAKAN PYPDF)
-    # ====================================================
+    # Extract Text
     text_content = ""
     try:
-        # Baca file yang baru saja disimpan menggunakan library pypdf
         reader = PdfReader(file_path)
         for page in reader.pages:
             extract = page.extract_text()
             if extract:
                 text_content += extract + "\n"
-                
-        print(f"Berhasil mengekstrak {len(text_content)} karakter dari PDF.")
-        
-    except Exception as e:
-        print(f"Gagal ekstrak PDF: {e}")
-        raise HTTPException(status_code=500, detail="Gagal memproses file PDF (mungkin file rusak atau terenkripsi)")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Gagal memproses PDF")
 
-    # ====================================================
-    # INDEXING KE LLAMAINDEX/CHROMA
-    # ====================================================
+    if not text_content.strip():
+        raise HTTPException(status_code=400, detail="PDF kosong/gambar scan")
 
-    # Buat Document LlamaIndex dari hasil ekstraksi teks yang bersih
+    # Indexing
     doc = Document(text=text_content, metadata={"filename": file.filename, "division": division_id})
-    
-    # Dapatkan index
     index = get_index_for_division(division_id)
-    
-    # Masukkan data baru
     index.insert(doc)
 
-    # Update Global Documents List dengan file baru
     DOCUMENTS.append({
         "filename": file.filename,
         "division_id": division_id,
         "uploaded_at": datetime.now().isoformat()
     })
 
-    return {"detail": f"File {file.filename} berhasil disimpan dan diindex."}
+    return {"detail": "Upload berhasil dan diindex."}
 
-# ========================
-# ENDPOINT: DOWNLOAD PDF (ADMIN ONLY)
-# ========================
 @app.get("/admin/download/pdf/{filename}", dependencies=[Depends(get_admin_token)])
 async def download_pdf_admin(filename: str):
-    # Sanitize filename to prevent directory traversal
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-        
     file_path = os.path.join("data", filename)
-    
     if not os.path.exists(file_path):
-        # DEBUG: Show what path was checked
-        raise HTTPException(status_code=404, detail=f"File not found: {file_path} (cwd: {os.getcwd()})")
-        
+        raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path, media_type="application/pdf", filename=filename)
 
-
-
-# ========================
-# ENDPOINT: FAQ (untuk Dashboard)
-# ========================
 @app.get("/faqs")
 async def get_faqs():
-    # Gabungkan FAQ manual + Document (formatted as FAQ)
+    # Menggabungkan Manual FAQs + Uploaded Docs (sebagai list)
     doc_faqs = []
     for idx, doc in enumerate(DOCUMENTS):
         doc_faqs.append({
             "id": f"doc_{idx}",
             "division_id": doc["division_id"],
             "question": f"File: {doc['filename']}",
-            "answer": f"Document uploaded on {doc['uploaded_at']}"
+            "answer": f"Uploaded: {doc['uploaded_at']}"
         })
     return FAQS + doc_faqs
-
 
 @app.post("/faq")
 async def add_faq(data: NewFaq):
     global FAQ_COUNTER, FAQS
-
     faq = {
         "id": FAQ_COUNTER,
         "division_id": data.division_id,
@@ -399,24 +375,18 @@ async def add_faq(data: NewFaq):
     }
     FAQ_COUNTER += 1
     FAQS.append(faq)
-
-    # masukkan FAQ ke Chroma juga sebagai knowledge
+    
+    # Masukkan juga ke Vector Store agar bisa ditanya
     text = f"Pertanyaan: {data.question}\nJawaban: {data.answer}"
     doc = Document(text=text, metadata={"division": data.division_id, "type": "faq"})
     index = get_index_for_division(data.division_id)
     index.insert(doc)
-
+    
     return faq
 
-
-# ========================
-# ENDPOINT: STATS & UNANSWERED (untuk Dashboard)
-# ========================
 @app.get("/stats")
 async def get_stats():
-    # Convert MONTHLY_HITS dict back to list format expected by UI
     monthly_list = [{"month": k, "count": v} for k, v in MONTHLY_HITS.items()]
-    
     return {
         "monthly": monthly_list,
         "total_faqs": len(FAQS) + len(DOCUMENTS), 
@@ -424,22 +394,16 @@ async def get_stats():
         "total_documents": len(DOCUMENTS)
     }
 
-
 @app.get("/unanswered")
 async def get_unanswered():
     return UNANSWERED
 
-
-# ========================
-# ENDPOINT: CHATBOT (untuk ChatPage)
-# ========================
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     global UNANSWERED, UNANSWERED_COUNTER, MONTHLY_HITS
 
+    # Stats Hit
     current_month = datetime.now().strftime("%b")
-    
-    # Cek apakah bulan tersebut ada di dictionary kita
     if current_month in MONTHLY_HITS:
         MONTHLY_HITS[current_month] += 1
     else:
@@ -448,9 +412,12 @@ async def chat(req: ChatRequest):
     division_id = req.division
     index = get_index_for_division(division_id)
     
+    # Dynamic Prompt
+    dynamic_prompt = get_dynamic_prompt_template(division_id)
+    
     query_engine = index.as_query_engine(
         llm=llm,
-        text_qa_template=QA_PROMPT 
+        text_qa_template=dynamic_prompt
     )
 
     answer = ""
@@ -458,28 +425,21 @@ async def chat(req: ChatRequest):
         res = query_engine.query(req.message)
         answer = str(res)
     except Exception as e:
-        print(f"Error: {e}")
-        answer = "Terjadi kesalahan pada sistem."
-   
+        print(f"Error LLM: {e}")
+        answer = "Mohon maaf, terjadi gangguan pada sistem AI kami."
+    
+    # Logika Unanswered / Redirect Check
     ans_lower = answer.lower()
-    
     failure_keywords = [
-        "mohon maaf", 
-        "tidak dapat dipahami", 
-        "informasi spesifik", 
-        "belum tersedia",
-        "tidak menemukan jawaban",
-        "saya tidak tahu",
-        "silakan beralih", 
-        "silakan ajukan"
+        "mohon maaf", "tidak dapat dipahami", "informasi spesifik", 
+        "belum tersedia", "tidak menemukan jawaban", "saya tidak tahu",
+        "silakan beralih", "silakan ajukan"
     ]
-    
     is_redirect = "[[redirect:" in ans_lower
     
-    if any(k in ans_lower for k in failure_keywords) or is_redirect:
-        
+    if (any(k in ans_lower for k in failure_keywords) or is_redirect) and not is_redirect:
+        # Simpan ke unanswered jika bukan redirect sukses
         is_duplicate = any(u["question"] == req.message for u in UNANSWERED)
-        
         if not is_duplicate:
             UNANSWERED.append({
                 "id": UNANSWERED_COUNTER,
@@ -490,3 +450,7 @@ async def chat(req: ChatRequest):
             UNANSWERED_COUNTER += 1
     
     return ChatResponse(session_id=req.session_id, answer=answer)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
