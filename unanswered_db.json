@@ -1,0 +1,50 @@
+[
+    {
+        "id": 1,
+        "division_id": "HCM",
+        "question": "bagaiaman cara claim garansi",
+        "created_at": "2026-01-22 04:57",
+        "status": "Redirected",
+        "hit_count": 1
+    },
+    {
+        "id": 2,
+        "division_id": "HCM",
+        "question": "cara kalim garansi",
+        "created_at": "2026-01-22 04:57",
+        "status": "Unanswered",
+        "hit_count": 1
+    },
+    {
+        "id": 3,
+        "division_id": "HCM",
+        "question": "bagaimana cara claim garansi",
+        "created_at": "2026-01-22 04:59",
+        "status": "Redirected",
+        "hit_count": 1
+    },
+    {
+        "id": 4,
+        "division_id": "HCM",
+        "question": "bagaiamana cara claim garansi",
+        "created_at": "2026-01-22 05:12",
+        "status": "Redirected",
+        "hit_count": 1
+    },
+    {
+        "id": 5,
+        "division_id": "HCM",
+        "question": "bagaiamana cara claim garansi",
+        "created_at": "2026-01-22 05:15",
+        "status": "Redirected",
+        "hit_count": 1
+    },
+    {
+        "id": 6,
+        "division_id": "MRO",
+        "question": "apa saja lowog magang yang tersedia",
+        "created_at": "2026-01-22 05:16",
+        "status": "Redirected",
+        "hit_count": 1
+    }
+]

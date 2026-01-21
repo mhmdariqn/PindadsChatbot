@@ -28,15 +28,6 @@ CHROMA_TENANT = os.getenv("CHROMA_TENANT")
 CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
 DB_FILE = "divisions_db.json"
-
-if not MISTRAL_API_KEY or not CHROMA_API_KEY:
-    raise ValueError("MISTRAL_API_KEY dan CHROMA_API_KEY wajib diisi di .env")
-
-# ========================
-# 2. HELPER FUNCTIONS (CORE)
-# ========================
-
-# --- FUNGSI SLUGIFY (PERBAIKAN UTAMA) ---
 def slugify(text: str) -> str:
     """Mengubah string menjadi format ID yang aman (contoh: 'Human Capital' -> 'human_capital')"""
     text = text.strip().lower()
@@ -58,6 +49,85 @@ def save_divisions_to_db(divisions_data):
             json.dump(divisions_data, f, indent=4)
     except Exception as e:
         print(f"Gagal menyimpan database JSON: {e}")
+
+
+UNANSWERED_DB_FILE = "unanswered_db.json"
+def load_unanswered_from_db():
+    if os.path.exists(UNANSWERED_DB_FILE):
+        try:
+            with open(UNANSWERED_DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_unanswered_to_db(data):
+    try:
+        with open(UNANSWERED_DB_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan unanswered db: {e}")
+
+STATS_DB_FILE = "stats_db.json"
+DEFAULT_STATS = {
+    "Jan": 0, "Feb": 0, "Mar": 0, "Apr": 0,
+    "May": 0, "Jun": 0, "Jul": 0, "Aug": 0,
+    "Sep": 0, "Oct": 0, "Nov": 0, "Dec": 0
+}
+def load_stats_from_db():
+    if os.path.exists(STATS_DB_FILE):
+        try:
+            with open(STATS_DB_FILE, "r") as f:
+                data = json.load(f)
+                return {**DEFAULT_STATS, **data}
+        except Exception:
+            return DEFAULT_STATS.copy()
+    return DEFAULT_STATS.copy()
+
+def save_stats_to_db(data):
+    try:
+        with open(STATS_DB_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan stats db: {e}")
+
+DOCUMENTS_DB_FILE = "documents_db.json"
+FAQS_DB_FILE = "faqs_db.json"
+
+def load_documents_from_db():
+    if os.path.exists(DOCUMENTS_DB_FILE):
+        try:
+            with open(DOCUMENTS_DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_documents_to_db(data):
+    try:
+        with open(DOCUMENTS_DB_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan documents db: {e}")
+
+def load_faqs_from_db():
+    if os.path.exists(FAQS_DB_FILE):
+        try:
+            with open(FAQS_DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_faqs_to_db(data):
+    try:
+        with open(FAQS_DB_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan faqs db: {e}")
+
+if not MISTRAL_API_KEY or not CHROMA_API_KEY:
+    raise ValueError("MISTRAL_API_KEY dan CHROMA_API_KEY wajib diisi di .env")
 
 # ========================
 # 3. INITIALIZE CLIENTS
@@ -90,17 +160,10 @@ except Exception:
 
 DIVISIONS = []
 
-# Default jika kosong total
-DEFAULT_DIVISIONS = [
-    {"id": "MRO", "name": "Maintenance Repair & Overhaul", "description": "Layanan perbaikan alat berat dan senjata"},
-    {"id": "TJSL", "name": "Tanggung Jawab Sosial & Lingkungan", "description": "Program CSR, UMKM, dan bantuan sosial"},
-    {"id": "HCM", "name": "Human Capital Management", "description": "Rekrutmen, karir, magang, dan kepegawaian"},
-    {"id": "SCM", "name": "Supply Chain / Rantai Pasok", "description": "Pengadaan, vendor, dan logistik"},
-    {"id": "K3LH", "name": "Penjaminan Mutu / Quality Assurance", "description": "Mutu produk, ISO, dan keselamatan kerja"},
-]
-
+# --- BAGIAN INI DIUBAH AGAR MULAI DARI NOL ---
 if not saved_divisions and not valid_ids:
-    DIVISIONS = DEFAULT_DIVISIONS
+    # Mulai dengan kosong (User harus input manual)
+    DIVISIONS = []
     save_divisions_to_db(DIVISIONS)
 else:
     # 1. Prioritaskan data JSON (karena ada nama panjang & deskripsi)
@@ -117,16 +180,12 @@ else:
     save_divisions_to_db(DIVISIONS)
 
 # Global Variables
-FAQS: List[Dict] = []       
-FAQ_COUNTER = 1
-UNANSWERED: List[Dict] = [] 
-UNANSWERED_COUNTER = 1
-DOCUMENTS: List[Dict] = [] 
-MONTHLY_HITS = {
-    "Jan": 0, "Feb": 0, "Mar": 0, "Apr": 0,
-    "May": 0, "Jun": 0, "Jul": 0, "Aug": 0,
-    "Sep": 0, "Oct": 0, "Nov": 0, "Dec": 0
-}
+FAQS: List[Dict] = load_faqs_from_db()
+DOCUMENTS: List[Dict] = load_documents_from_db()
+FAQ_COUNTER = (max([f["id"] for f in FAQS]) + 1) if FAQS else 1
+UNANSWERED: List[Dict] = load_unanswered_from_db()
+UNANSWERED_COUNTER = (max([u["id"] for u in UNANSWERED]) + 1) if UNANSWERED else 1
+MONTHLY_HITS = load_stats_from_db()
 
 # ========================
 # 5. PROMPT TEMPLATE
@@ -139,27 +198,61 @@ def get_dynamic_prompt_template(current_div_id: str):
         desc = d.get("description", "Layanan Divisi")
         redirect_list_str += f"- Topik: {d['name']} ({desc}) -> [[REDIRECT:{d['id']}]]\n"
 
+    # Jika tidak ada divisi lain, kosongkan list redirect
+    if not redirect_list_str:
+        redirect_list_str = "(Tidak ada divisi lain yang tersedia saat ini)"
+
     template_str = f"""
-Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {current_div_id}.
+Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {{current_div_id}}.
 Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
 
-ATURAN KRUSIAL:
-1. Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
-2. Jawaban harus sopan, formal, dan membantu.
+ATURAN KRUSIAL (GAYA BAHASA):
+1. DILARANG KERAS menggunakan frasa: "berdasarkan dokumen", "menurut konteks", atau "informasi yang tersedia". Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
+2. Jawaban harus sopan, formal, dan sangat membantu.
 
-LOGIKA PENANGANAN PERTANYAAN:
+LOGIKA PENANGANAN PERTANYAAN (Ikuti Prioritas 1-3):
 
-1. **JAWABAN LANGSUNG**
-   Jika pertanyaan RELEVAN dengan divisi ini ({current_div_id}) dan informasinya ada di konteks:
+1. **PRIORITAS UTAMA: JAWABAN LANGSUNG**
+   Jika pertanyaan RELEVAN dengan divisi ini ({{current_div_id}}) dan informasinya ada di konteks:
    - Jawab langsung pertanyaannya secara lengkap.
 
-2. **SALAH DIVISI (REDIRECT)**
-   Jika pertanyaan TIDAK RELEVAN, cek daftar berikut:
-   {redirect_list_str}
-   Contoh: "Mohon maaf, layanan tersebut ditangani divisi lain. [[REDIRECT:MRO]]"
+2. **PRIORITAS KEDUA: SALAH DIVISI (REDIRECT)**
+   Jika pertanyaan menyangkut wewenang divisi lain (Cek daftar divisi lain di bawah), lakukan langkah ini:
+   - Berikan jawaban singkat bahwa hal tersebut ditangani divisi terkait.
+   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email saat melakukan redirect (biarkan tombol sistem yang bekerja).
+   - AKHIRI jawaban dengan TAG REDIRECT: [[REDIRECT:ID_DIVISI]].
 
-3. **KONTAK MANUAL**
-   Jika relevan tapi tidak ada jawaban detail di dokumen, arahkan ke kontak PIC terkait.
+   **Panduan Redirect:**
+   - Produk, Penjualan, Senjata, Alat Berat, MRO, Servis, Garansi -> Divisi MRO
+   - Rekrutmen, Karir, Loker, Magang, Gaji, HRD -> Divisi HCM
+   - Vendor, Tender, Pengadaan, Rantai Pasok, Invoice -> Divisi SCM
+   - Mutu, K3LH, Keselamatan Kerja, ISO, Lingkungan -> Divisi K3LH
+   - CSR, TJSL, Bantuan, Proposal, UMKM -> Divisi TJSL
+
+   **Daftar Divisi Tersedia:**
+   {redirect_list_str}
+
+3. **PRIORITAS KETIGA: DIVISI BENAR TAPI DATA KURANG (MANUAL CONTACT)**
+   Jika pertanyaan RELEVAN dengan divisi ini ({{current_div_id}}) tapi jawaban detail TIDAK DITEMUKAN di dokumen:
+   - Anda WAJIB memberikan kontak PIC khusus divisi ini. Gunakan data berikut:
+     * Jika di Divisi HCM: Vania Avviantari (ecareer@pindad.com / 0851-1720-5177)
+     * Jika di Divisi SCM: Juliandre Caesar Evanda (andre@pindad.com / 0813-1223-8553)
+     * Jika di Divisi TJSL: Dwi Sumeitri (dsumeitri@pindad.com / Ext 2243)
+     * Jika di Divisi MRO: Email ke defense@pindad.com atau sales@pindad.com
+   - JANGAN gunakan tag redirect untuk kasus ini.
+
+---
+CONTOH INTERAKSI:
+
+User: "Bagaimana cara servis traktor?" (Saat user di Room HCM)
+Bot: "Mohon maaf, layanan perbaikan alat berat ditangani oleh Divisi Maintenance Repair & Overhaul (MRO). Silakan beralih ke room divisi terkait. [[REDIRECT:MRO]]"
+
+User: "Apa syarat magang?" (Saat user di Room HCM, info ada di dokumen)
+Bot: "Syarat administrasi magang meliputi Surat Pengantar dari sekolah/kampus, CV, Transkrip Nilai, Pas Foto, dan SKCK."
+
+User: "Ada lowongan Sastra Jepang?" (Saat user di Room HCM, info tidak ada)
+Bot: "Saat ini informasi spesifik mengenai formasi tersebut belum tersedia. Anda dapat menanyakan langsung kepada PIC Rekrutmen, Ibu Vania Avviantari melalui email ecareer@pindad.com."
+---
 
 Context information is below.
 ---------------------
@@ -168,7 +261,7 @@ Context information is below.
 Given the context information and not prior knowledge, answer the query.
 Query: {{query_str}}
 Answer:
-"""
+    """
     return PromptTemplate(template_str)
 
 # ========================
@@ -178,7 +271,7 @@ app = FastAPI(title="PINDAD Chatbot API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Ganti "*" dengan spesifik URL di production
+    allow_origins=["*"], 
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -240,14 +333,11 @@ async def list_divisions():
 async def create_division(data: NewDivision):
     global DIVISIONS
     
-    # Generate ID menggunakan fungsi slugify yang sudah diperbaiki
     div_id = slugify(data.name)
 
-    # Cek duplikasi di memory
     if any(d["id"] == div_id for d in DIVISIONS):
         raise HTTPException(status_code=400, detail="Divisi sudah ada")
 
-    # Buat Collection di Chroma
     try:
         try:
             client.get_collection(div_id)
@@ -256,10 +346,9 @@ async def create_division(data: NewDivision):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    # Simpan ke Memory & JSON
     new_entry = {"id": div_id, "name": data.name, "description": data.description}
     DIVISIONS.append(new_entry)
-    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
+    save_divisions_to_db(DIVISIONS)
 
     return new_entry
 
@@ -276,21 +365,24 @@ async def update_division_description(div_id: str, data: UpdateDivisionDescripti
     if not div_found:
         raise HTTPException(status_code=404, detail="Divisi tidak ditemukan")
     
-    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
+    save_divisions_to_db(DIVISIONS)
     return div_found
 
 @app.delete("/division/{div_id}")
 async def delete_division(div_id: str):
-    global DIVISIONS, FAQS
+    global DIVISIONS, FAQS, DOCUMENTS
     try:
         client.delete_collection(div_id)
     except Exception:
-        pass # Ignore if not exists in Chroma
+        pass 
         
     DIVISIONS = [d for d in DIVISIONS if d["id"] != div_id]
     FAQS = [f for f in FAQS if f["division_id"] != div_id]
+    DOCUMENTS = [doc for doc in DOCUMENTS if doc["division_id"] != div_id]
     
-    save_divisions_to_db(DIVISIONS) # <-- PERBAIKAN PERSISTENCE
+    save_divisions_to_db(DIVISIONS)
+    save_faqs_to_db(FAQS)
+    save_documents_to_db(DOCUMENTS)
     return {"detail": "Divisi dihapus"}
 
 @app.post("/upload/{division_id}")
@@ -307,15 +399,12 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content_bytes)
 
-    # Reset data di Chroma untuk file ini (opsional: overwrite strategy)
     try:
         coll = client.get_collection(division_id)
-        # Di sini kita hapus semua untuk kesederhanaan, atau bisa hapus berdasarkan metadata filename
         pass 
     except Exception:
         pass
 
-    # Extract Text
     text_content = ""
     try:
         reader = PdfReader(file_path)
@@ -329,7 +418,6 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     if not text_content.strip():
         raise HTTPException(status_code=400, detail="PDF kosong/gambar scan")
 
-    # Indexing
     doc = Document(text=text_content, metadata={"filename": file.filename, "division": division_id})
     index = get_index_for_division(division_id)
     index.insert(doc)
@@ -339,6 +427,8 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
         "division_id": division_id,
         "uploaded_at": datetime.now().isoformat()
     })
+
+    save_documents_to_db(DOCUMENTS)
 
     return {"detail": "Upload berhasil dan diindex."}
 
@@ -353,7 +443,6 @@ async def download_pdf_admin(filename: str):
 
 @app.get("/faqs")
 async def get_faqs():
-    # Menggabungkan Manual FAQs + Uploaded Docs (sebagai list)
     doc_faqs = []
     for idx, doc in enumerate(DOCUMENTS):
         doc_faqs.append({
@@ -376,12 +465,13 @@ async def add_faq(data: NewFaq):
     FAQ_COUNTER += 1
     FAQS.append(faq)
     
-    # Masukkan juga ke Vector Store agar bisa ditanya
     text = f"Pertanyaan: {data.question}\nJawaban: {data.answer}"
     doc = Document(text=text, metadata={"division": data.division_id, "type": "faq"})
     index = get_index_for_division(data.division_id)
     index.insert(doc)
     
+    save_faqs_to_db(FAQS)
+
     return faq
 
 @app.get("/stats")
@@ -402,24 +492,22 @@ async def get_unanswered():
 async def chat(req: ChatRequest):
     global UNANSWERED, UNANSWERED_COUNTER, MONTHLY_HITS
 
-    # Stats Hit
-    current_month = datetime.now().strftime("%b")
+    # 1. Update Statistik Hits Bulanan
+    current_month = datetime.now().strftime("%b") 
     if current_month in MONTHLY_HITS:
         MONTHLY_HITS[current_month] += 1
     else:
         MONTHLY_HITS[current_month] = 1
+    
+    save_stats_to_db(MONTHLY_HITS)
 
+    # 2. Siapkan Index & Engine
     division_id = req.division
     index = get_index_for_division(division_id)
-    
-    # Dynamic Prompt
     dynamic_prompt = get_dynamic_prompt_template(division_id)
-    
-    query_engine = index.as_query_engine(
-        llm=llm,
-        text_qa_template=dynamic_prompt
-    )
+    query_engine = index.as_query_engine(llm=llm, text_qa_template=dynamic_prompt)
 
+    # 3. Eksekusi Query
     answer = ""
     try:
         res = query_engine.query(req.message)
@@ -428,26 +516,35 @@ async def chat(req: ChatRequest):
         print(f"Error LLM: {e}")
         answer = "Mohon maaf, terjadi gangguan pada sistem AI kami."
     
-    # Logika Unanswered / Redirect Check
+    # 4. Deteksi Kegagalan atau Redirect
     ans_lower = answer.lower()
     failure_keywords = [
         "mohon maaf", "tidak dapat dipahami", "informasi spesifik", 
         "belum tersedia", "tidak menemukan jawaban", "saya tidak tahu",
         "silakan beralih", "silakan ajukan"
     ]
-    is_redirect = "[[redirect:" in ans_lower
     
-    if (any(k in ans_lower for k in failure_keywords) or is_redirect) and not is_redirect:
-        # Simpan ke unanswered jika bukan redirect sukses
-        is_duplicate = any(u["question"] == req.message for u in UNANSWERED)
-        if not is_duplicate:
-            UNANSWERED.append({
-                "id": UNANSWERED_COUNTER,
-                "division_id": division_id, 
-                "question": req.message,    
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M") 
-            })
-            UNANSWERED_COUNTER += 1
+    is_redirect = "[[redirect:" in ans_lower
+    is_failure = any(k in ans_lower for k in failure_keywords)
+    
+    # LOGIKA: APPEND ALWAYS (Tanpa Cek Duplikat)
+    # Jika gagal atau redirect, langsung buat entry baru.
+    if is_failure or is_redirect:
+        
+        new_entry = {
+            "id": UNANSWERED_COUNTER,
+            "division_id": division_id, 
+            "question": req.message,    
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "status": "Redirected" if is_redirect else "Unanswered",
+            "hit_count": 1 # Selalu 1, karena setiap kejadian dicatat sebagai baris baru
+        }
+        
+        UNANSWERED.append(new_entry)
+        UNANSWERED_COUNTER += 1
+        
+        # Simpan ke database JSON agar aman saat restart
+        save_unanswered_to_db(UNANSWERED)
     
     return ChatResponse(session_id=req.session_id, answer=answer)
 

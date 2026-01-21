@@ -1,27 +1,27 @@
 [
     {
+        "id": "HCM",
+        "name": "HCM",
+        "description": ""
+    },
+    {
         "id": "MRO",
-        "name": "Maintenance Repair & Overhaul",
-        "description": "Layanan perbaikan alat berat dan senjata"
+        "name": "MRO",
+        "description": ""
     },
     {
         "id": "TJSL",
-        "name": "Tanggung Jawab Sosial & Lingkungan",
-        "description": "Program CSR, UMKM, dan bantuan sosial"
-    },
-    {
-        "id": "HCM",
-        "name": "Human Capital Management",
-        "description": "Rekrutmen, karir, magang, dan kepegawaian"
+        "name": "TJSL",
+        "description": ""
     },
     {
         "id": "SCM",
-        "name": "Supply Chain / Rantai Pasok",
-        "description": "Pengadaan, vendor, dan logistik"
+        "name": "SCM",
+        "description": ""
     },
     {
         "id": "K3LH",
-        "name": "Penjaminan Mutu / Quality Assurance",
-        "description": "Mutu produk, ISO, dan keselamatan kerja"
+        "name": "K3LH",
+        "description": ""
     }
 ]
