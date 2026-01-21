@@ -51,71 +51,39 @@ client = chromadb.CloudClient(
 # ========================
 # CUSTOM PROMPT (LOGIKA REDIRECT & KONTAK PIC)
 # ========================
-qa_template_str = """
-Anda adalah asisten virtual profesional untuk PT Pindad. 
-Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
+def generate_smart_id(name: str) -> str:
+    """
+    Smart Generator: Membuat ID pendek otomatis dari Nama Divisi.
+    Prioritas:
+    1. Format "ID - Nama" -> Ambil ID.
+    2. Format "Nama (ID)" -> Ambil ID.
+    3. Singkatan Huruf Kapital -> Ambil Kapital (Min 2 huruf).
+    4. Fallback -> Slugify biasa (dipotong max 15 char).
+    """
+    # CASE 1: Pola "ID - Nama Panjang" (Cth: "K3LH - Penjaminan Mutu")
+    if " - " in name:
+        candidate = name.split(" - ")[0].strip()
+        clean_id = re.sub(r"[^a-zA-Z0-9]+", "", candidate).upper()
+        if clean_id: return clean_id
 
-ATURAN KRUSIAL (GAYA BAHASA & KONTEN):
-1. DILARANG KERAS menggunakan frasa: "berdasarkan dokumen", "menurut konteks", "informasi yang tersedia", atau sejenisnya. Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
-2. Jawaban harus sopan, formal, dan membantu.
+    # CASE 2: Pola Kurung "(ID)" (Cth: "Layanan (MRO)")
+    match = re.search(r"\((.*?)\)", name)
+    if match:
+        candidate = match.group(1).strip()
+        clean_id = re.sub(r"[^a-zA-Z0-9]+", "", candidate).upper()
+        if 1 < len(clean_id) <= 8: 
+            return clean_id
 
-LOGIKA PENANGANAN PERTANYAAN (Ikuti Prioritas 1-3):
+    # CASE 3: Auto-Acronym (Ambil Huruf Kapital) (Cth: "Human Capital Management" -> "HCM")
+    capitals = "".join([c for c in name if c.isupper() and c.isalnum()])
+    if 2 <= len(capitals) <= 6:
+        return capitals
 
-1. **PRIORITAS UTAMA: JAWABAN LANGSUNG**
-   Jika pertanyaan relevan dengan divisi saat ini dan informasinya ada di konteks:
-   - Jawab langsung pertanyaannya secara lengkap.
-
-2. **PRIORITAS KEDUA: SALAH DIVISI (REDIRECT)**
-   Jika pertanyaan menyangkut wewenang divisi lain:
-   - Berikan jawaban singkat bahwa hal tersebut ditangani divisi terkait.
-   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email milik divisi tujuan redirect.
-   - AKHIRI jawaban dengan TAG REDIRECT PENDEK.
-
-   Daftar Mapping Tag:
-   - Alat Berat, Bengkel, MRO, Penjualan Produk (Sales), Layanan purna jual, produk, senjata, munisi, garansi, service, antar jemput, pembelian produk -> [[REDIRECT:MRO]]
-   - Rekrutmen, Karir, Magang, HRD -> [[REDIRECT:HCM]]
-   - Vendor, Tender, Pengadaan, Rantai Pasok -> [[REDIRECT:SCM]]
-   - Mutu, Kualitas, K3LH, ISO -> [[REDIRECT:K3LH]]
-   - CSR, Bantuan Proposal, UMKM, Lingkungan -> [[REDIRECT:TJSL]]
-
-3. **PRIORITAS KETIGA: DIVISI BENAR TAPI DATA KURANG (MANUAL CONTACT)**
-   Jika pertanyaan relevan dengan divisi ini tapi jawaban detail tidak ditemukan di tabel FAQ:
-   - Anda WAJIB memberikan Nama PIC, Email, atau Nomor Kontak KHUSUS untuk divisi ini yang tertera di dokumen.
-   - Gunakan data kontak berikut jika sesuai dengan Divisi Room saat ini:
-     * HCM/Rekrutmen: Vania Avviantari (ecareer@pindad.com / 0851-1720-5177)
-     * SCM/Rantai Pasok: Juliandre Caesar Evanda (andre@pindad.com / 0813-1223-8553)
-     * TJSL/CSR: Dwi Sumeitri (dsumeitri@pindad.com / Ext 2243)
-     * MRO/Sales: Email defense@pindad.com atau sales@pindad.com
-   - JANGAN gunakan tag redirect.
-
----
-CONTOH INTERAKSI YANG DIHARAPKAN:
-
-Kasus A (Salah Kamar - Redirect):
-User (di Room HCM): "Bagaimana cara servis traktor dan beli senjata?"
-Bot: "Mohon maaf, layanan perbaikan alat berat dan pembelian produk pertahanan ditangani oleh Divisi Pemasaran & MRO. Silakan beralih ke room divisi terkait melalui tombol di bawah. [[REDIRECT:MRO]]"
-(Perhatikan: Bot TIDAK menyebutkan email sales@pindad.com di sini, biarkan tombol yang bekerja).
-
-Kasus B (Kamar Benar - Info Kurang - Kasih Kontak):
-User (di Room HCM): "Apakah ada lowongan spesifik untuk lulusan Sastra Jepang?" (Tidak ada info spesifik di dokumen).
-Bot: "Saat ini informasi spesifik mengenai formasi tersebut belum tersedia. Anda dapat menanyakan ketersediaan formasi secara langsung kepada PIC Rekrutmen, Ibu Vania Avviantari melalui email ecareer@pindad.com atau WhatsApp 0851-1720-5177."
-(Perhatikan: Bot memberikan kontak karena topiknya benar di HCM).
-
-Kasus C (Jawaban Tersedia):
-User: "Apa syarat magang?"
-Bot: "Syarat administrasi magang meliputi Surat Pengantar dari sekolah/kampus, CV, Transkrip Nilai, Pas Foto, dan SKCK."
-(Perhatikan: Langsung jawab tanpa embel-embel 'berdasarkan dokumen').
----
-
-Context information is below.
-{context_str}
----------------------
-Given the context information and not prior knowledge, answer the query.
-Query: {query_str}
-Answer:
-"""
-
-QA_PROMPT = PromptTemplate(qa_template_str)
+    # CASE 4: Fallback (Slugify Biasa)
+    text = name.strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = text.strip("_")
+    return text[:15] or "divisi"
 
 # ========================
 # DATA IN-MEMORY (DEMO)
@@ -230,17 +198,26 @@ async def list_divisions():
 @app.post("/division")
 async def create_division(data: NewDivision):
     global DIVISIONS
-    div_id = slugify(data.name)
+    
+    # Gunakan Smart Generator
+    div_id = generate_smart_id(data.name)
 
-    # cek duplikat
+    # Cek Duplikat ID
     if any(d["id"] == div_id for d in DIVISIONS):
-        raise HTTPException(status_code=400, detail="Divisi sudah ada")
+        # Jika ID "HCM" sudah ada, otomatis jadi "HCM_2", "HCM_3", dst.
+        import random
+        div_id = f"{div_id}_{random.randint(10, 99)}"
 
-    # buat collection di Chroma
-    client.create_collection(div_id)
+    # Buat collection di Chroma
+    try:
+        client.create_collection(div_id)
+    except Exception:
+        pass # Lanjut jika collection sudah ada
 
-    DIVISIONS.append({"id": div_id, "name": data.name, "description": data.description})
-    return {"id": div_id, "name": data.name, "description": data.description}
+    new_div = {"id": div_id, "name": data.name, "description": data.description}
+    DIVISIONS.append(new_div)
+    
+    return new_div
 
 # ========================
 # ENDPOINT: UPLOAD FILE 
