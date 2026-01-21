@@ -286,10 +286,13 @@ async def delete_division(div_id: str):
 @app.post("/upload/{division_id}")
 async def upload_file(division_id: str, file: UploadFile = File(...)):
     """
-    Menerima file, MENGHAPUS isi collection lama (jika ada), 
-    lalu mengupload dan mengindex file baru.
+    1. Terima Binary PDF.
+    2. Hapus data lama di ChromaDB.
+    3. Simpan Binary PDF ke Disk (untuk fitur Download).
+    4. Ekstrak Teks dari PDF menggunakan pypdf (untuk fitur AI).
+    5. Index ke ChromaDB.
     """
-    global DOCUMENTS # Kita perlu akses global variable untuk update list dokumen di memori
+    global DOCUMENTS 
 
     # 1. Validasi Ekstensi
     if not file.filename.endswith(".pdf"):
@@ -298,56 +301,65 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
             detail="Demo ini hanya mendukung file .pdf"
         )
 
-    # 2. Baca File
+    # 2. Baca Content File (Binary)
     content_bytes = await file.read()
     
-    # 3. Simpan file fisik (Opsional: overwrite file lama jika nama sama)
+    # 3. Simpan file fisik (Binary Asli agar tidak corrupt saat didownload nanti)
     if not os.path.exists("data"):
         os.makedirs("data")
         
     file_path = os.path.join("data", file.filename)
+    
+    # Tulis mode 'wb' (Write Binary) -> PENTING agar file tidak corrupt
     with open(file_path, "wb") as f:
         f.write(content_bytes)
-        
-    # 4. Decode text
-    try:
-        text = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content_bytes.decode("latin-1")
 
     # ====================================================
-    # LOGIKA BARU: HAPUS ISI LAMA (RESET COLLECTION)
+    # HAPUS DATA LAMA (RESET COLLECTION)
     # ====================================================
     try:
-        # Ambil collection berdasarkan division_id
         coll = client.get_collection(division_id)
-        
-        # Ambil semua data (kita butuh ID-nya untuk menghapus)
         existing_data = coll.get()
         existing_ids = existing_data.get('ids', [])
 
         if existing_ids:
-            # Jika ada isinya, hapus berdasarkan ID
             print(f"Menghapus {len(existing_ids)} dokumen lama dari divisi {division_id}...")
             coll.delete(ids=existing_ids)
             
-            # PENTING: Hapus juga metadata file lama dari variable global DOCUMENTS
-            # supaya data di dashboard 'Stats' sinkron dengan isi Chroma
+            # Hapus metadata lama dari memory agar sinkron dengan dashboard
             DOCUMENTS = [doc for doc in DOCUMENTS if doc["division_id"] != division_id]
 
     except Exception as e:
-        # Jika collection belum ada (error), tidak masalah, lanjut buat baru di bawah
-        print(f"Collection belum ada atau error saat clear data: {e}")
+        # Jika collection belum ada, abaikan error ini
+        print(f"Info: {e}")
         pass
 
     # ====================================================
-    # LANJUTKAN PROSES UPLOAD SEPERTI BIASA
+    # EKSTRAKSI TEKS YANG BENAR (MENGGUNAKAN PYPDF)
+    # ====================================================
+    text_content = ""
+    try:
+        # Baca file yang baru saja disimpan menggunakan library pypdf
+        reader = PdfReader(file_path)
+        for page in reader.pages:
+            extract = page.extract_text()
+            if extract:
+                text_content += extract + "\n"
+                
+        print(f"Berhasil mengekstrak {len(text_content)} karakter dari PDF.")
+        
+    except Exception as e:
+        print(f"Gagal ekstrak PDF: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memproses file PDF (mungkin file rusak atau terenkripsi)")
+
+    # ====================================================
+    # INDEXING KE LLAMAINDEX/CHROMA
     # ====================================================
 
-    # Buat Document LlamaIndex
-    doc = Document(text=text, metadata={"filename": file.filename, "division": division_id})
+    # Buat Document LlamaIndex dari hasil ekstraksi teks yang bersih
+    doc = Document(text=text_content, metadata={"filename": file.filename, "division": division_id})
     
-    # Dapatkan index (ini akan memakai collection yang sudah dikosongkan tadi)
+    # Dapatkan index
     index = get_index_for_division(division_id)
     
     # Masukkan data baru
@@ -360,8 +372,7 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
         "uploaded_at": datetime.now().isoformat()
     })
 
-    return {"detail": f"Data lama dihapus. File {file.filename} berhasil diupload dan diindex."}
-
+    return {"detail": f"File {file.filename} berhasil disimpan dan diindex."}
 
 # ========================
 # ENDPOINT: DOWNLOAD PDF (ADMIN ONLY)
