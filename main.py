@@ -66,17 +66,17 @@ LOGIKA PENANGANAN PERTANYAAN (Ikuti Prioritas 1-3):
    - Jawab langsung pertanyaannya secara lengkap.
 
 2. **PRIORITAS KEDUA: SALAH DIVISI (REDIRECT)**
-   Jika pertanyaan menyangkut wewenang divisi lain (misal: User bertanya soal Alat Berat di room HCM, atau soal Rekrutmen di room MRO):
+   Jika pertanyaan menyangkut wewenang divisi lain:
    - Berikan jawaban singkat bahwa hal tersebut ditangani divisi terkait.
-   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email milik divisi tujuan redirect tersebut di dalam teks jawaban (Informasi ini akan ditangani oleh tombol sistem).
-   - AKHIRI jawaban dengan TAG REDIRECT.
+   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email milik divisi tujuan redirect.
+   - AKHIRI jawaban dengan TAG REDIRECT PENDEK.
 
    Daftar Mapping Tag:
-   - Alat Berat, Bengkel, MRO, Penjualan Produk (Sales) -> [[REDIRECT:maintenance_repair_overhaul]]
+   - Alat Berat, Bengkel, MRO, Penjualan Produk (Sales), Layanan purna jual, produk, senjata, munisi, garansi, service, antar jemput, pembelian produk -> [[REDIRECT:MRO]]
    - Rekrutmen, Karir, Magang, HRD -> [[REDIRECT:HCM]]
-   - Vendor, Tender, Pengadaan, Rantai Pasok -> [[REDIRECT:supply_chain_rantai_pasok]]
-   - Mutu, Kualitas, K3LH, ISO -> [[REDIRECT:penjaminan_mutu_quality_assurance]]
-   - CSR, Bantuan Proposal, UMKM, Lingkungan -> [[REDIRECT:tanggung_jawab_sosial_lingkungan]]
+   - Vendor, Tender, Pengadaan, Rantai Pasok -> [[REDIRECT:SCM]]
+   - Mutu, Kualitas, K3LH, ISO -> [[REDIRECT:K3LH]]
+   - CSR, Bantuan Proposal, UMKM, Lingkungan -> [[REDIRECT:TJSL]]
 
 3. **PRIORITAS KETIGA: DIVISI BENAR TAPI DATA KURANG (MANUAL CONTACT)**
    Jika pertanyaan relevan dengan divisi ini tapi jawaban detail tidak ditemukan di tabel FAQ:
@@ -445,18 +445,25 @@ async def get_unanswered():
 # ========================
 # ENDPOINT: CHATBOT (untuk ChatPage)
 # ========================
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    global UNANSWERED, UNANSWERED_COUNTER, MONTHLY_HITS
+
+    current_month = datetime.now().strftime("%b")
+    
+    # Cek apakah bulan tersebut ada di dictionary kita
+    if current_month in MONTHLY_HITS:
+        MONTHLY_HITS[current_month] += 1
+    else:
+        MONTHLY_HITS[current_month] = 1
+
     division_id = req.division
     index = get_index_for_division(division_id)
     
-    # === UBAH BAGIAN INI ===
-    # Masukkan text_qa_template=QA_PROMPT agar AI menuruti aturan redirect kita
     query_engine = index.as_query_engine(
         llm=llm,
         text_qa_template=QA_PROMPT 
     )
-    # =======================
 
     answer = ""
     try:
@@ -464,9 +471,34 @@ async def chat(req: ChatRequest):
         answer = str(res)
     except Exception as e:
         print(f"Error: {e}")
-        answer = ""
+        answer = "Terjadi kesalahan pada sistem."
+   
+    ans_lower = answer.lower()
     
-    # ... (lanjutkan sisa kode di bawahnya seperti biasa) ...
-    # Pastikan logic penyimpanan 'Unanswered' tidak menghitung jawaban redirect sebagai error.
+    failure_keywords = [
+        "mohon maaf", 
+        "tidak dapat dipahami", 
+        "informasi spesifik", 
+        "belum tersedia",
+        "tidak menemukan jawaban",
+        "saya tidak tahu",
+        "silakan beralih", 
+        "silakan ajukan"
+    ]
+    
+    is_redirect = "[[redirect:" in ans_lower
+    
+    if any(k in ans_lower for k in failure_keywords) or is_redirect:
+        
+        is_duplicate = any(u["question"] == req.message for u in UNANSWERED)
+        
+        if not is_duplicate:
+            UNANSWERED.append({
+                "id": UNANSWERED_COUNTER,
+                "division_id": division_id, 
+                "question": req.message,    
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M") 
+            })
+            UNANSWERED_COUNTER += 1
     
     return ChatResponse(session_id=req.session_id, answer=answer)
