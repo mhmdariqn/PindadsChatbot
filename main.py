@@ -29,10 +29,9 @@ CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
 DB_FILE = "divisions_db.json"
 def slugify(text: str) -> str:
-    """Mengubah string menjadi format ID yang aman (contoh: 'Human Capital' -> 'human_capital')"""
-    text = text.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_") or "unnamed_division"
+    text = text.strip().upper()  
+    text = re.sub(r"[^A-Z0-9]+", "_", text) 
+    return text.strip("_") or "UNNAMED_DIVISION"
 
 def load_divisions_from_db():
     if os.path.exists(DB_FILE):
@@ -202,27 +201,57 @@ def get_dynamic_prompt_template(current_div_id: str):
     if not redirect_list_str:
         redirect_list_str = "(Tidak ada divisi lain yang tersedia saat ini)"
 
-    template_str = f"""
-Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {current_div_id}.
+    template_str = template_str = f"""
+Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {{current_div_id}}.
 Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
 
-ATURAN KRUSIAL:
-1. Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
-2. Jawaban harus sopan, formal, dan membantu.
+ATURAN KRUSIAL (GAYA BAHASA):
+1. DILARANG KERAS menggunakan frasa: "berdasarkan dokumen", "menurut konteks", atau "informasi yang tersedia". Jawablah seolah-olah Anda memiliki pengetahuan tersebut sendiri.
+2. Jawaban harus sopan, formal, dan sangat membantu.
 
-LOGIKA PENANGANAN PERTANYAAN:
+LOGIKA PENANGANAN PERTANYAAN (Ikuti Prioritas 1-3):
 
-1. **JAWABAN LANGSUNG**
-   Jika pertanyaan RELEVAN dengan divisi ini ({current_div_id}) dan informasinya ada di konteks:
+1. **PRIORITAS UTAMA: JAWABAN LANGSUNG**
+   Jika pertanyaan RELEVAN dengan divisi ini ({{current_div_id}}) dan informasinya ada di konteks:
    - Jawab langsung pertanyaannya secara lengkap.
 
-2. **SALAH DIVISI (REDIRECT)**
-   Jika pertanyaan TIDAK RELEVAN, cek daftar berikut:
-   {redirect_list_str}
-   Contoh: "Mohon maaf, layanan tersebut ditangani divisi lain. [[REDIRECT:nama_divisi_lain]]"
+2. **PRIORITAS KEDUA: SALAH DIVISI (REDIRECT)**
+   Jika pertanyaan menyangkut wewenang divisi lain (Cek daftar divisi lain di bawah), lakukan langkah ini:
+   - Berikan jawaban singkat bahwa hal tersebut ditangani divisi terkait.
+   - DILARANG MENAMPILKAN Nama PIC, Nomor HP, atau Email saat melakukan redirect (biarkan tombol sistem yang bekerja).
+   - AKHIRI jawaban dengan TAG REDIRECT: [[REDIRECT:ID_DIVISI]].
 
-3. **KONTAK MANUAL**
-   Jika relevan tapi tidak ada jawaban detail di dokumen, arahkan ke kontak PIC terkait.
+   **Panduan Redirect:**
+   - Produk, Penjualan, Senjata, Alat Berat, MRO, Servis, Garansi -> Divisi MRO
+   - Rekrutmen, Karir, Loker, Magang, Gaji, HRD -> Divisi HCM
+   - Vendor, Tender, Pengadaan, Rantai Pasok, Invoice -> Divisi SCM
+   - Mutu, K3LH, Keselamatan Kerja, ISO, Lingkungan -> Divisi K3LH
+   - CSR, TJSL, Bantuan, Proposal, UMKM -> Divisi TJSL
+
+   **Daftar Divisi Tersedia:**
+   {redirect_list_str}
+
+3. **PRIORITAS KETIGA: DIVISI BENAR TAPI DATA KURANG (MANUAL CONTACT)**
+   Jika pertanyaan RELEVAN dengan divisi ini ({{current_div_id}}) tapi jawaban detail TIDAK DITEMUKAN di dokumen:
+   - Anda WAJIB memberikan kontak PIC khusus divisi ini. Gunakan data berikut:
+     * Jika di Divisi HCM: Vania Avviantari (ecareer@pindad.com / 0851-1720-5177)
+     * Jika di Divisi SCM: Juliandre Caesar Evanda (andre@pindad.com / 0813-1223-8553)
+     * Jika di Divisi TJSL: Dwi Sumeitri (dsumeitri@pindad.com / Ext 2243)
+     * Jika di Divisi MRO: Email ke defense@pindad.com atau sales@pindad.com
+   - JANGAN gunakan tag redirect untuk kasus ini.
+
+---
+CONTOH INTERAKSI:
+
+User: "Bagaimana cara servis traktor?" (Saat user di Room HCM)
+Bot: "Mohon maaf, layanan perbaikan alat berat ditangani oleh Divisi Maintenance Repair & Overhaul (MRO). Silakan beralih ke room divisi terkait. [[REDIRECT:MRO]]"
+
+User: "Apa syarat magang?" (Saat user di Room HCM, info ada di dokumen)
+Bot: "Syarat administrasi magang meliputi Surat Pengantar dari sekolah/kampus, CV, Transkrip Nilai, Pas Foto, dan SKCK."
+
+User: "Ada lowongan Sastra Jepang?" (Saat user di Room HCM, info tidak ada)
+Bot: "Saat ini informasi spesifik mengenai formasi tersebut belum tersedia. Anda dapat menanyakan langsung kepada PIC Rekrutmen, Ibu Vania Avviantari melalui email ecareer@pindad.com."
+---
 
 Context information is below.
 ---------------------
@@ -306,7 +335,7 @@ async def create_division(data: NewDivision):
     div_id = slugify(data.name)
 
     if any(d["id"] == div_id for d in DIVISIONS):
-        raise HTTPException(status_code=400, detail="Divisi sudah ada")
+        raise HTTPException(status_code=400, detail=f"Divisi '{data.name}' sudah ada")
 
     try:
         try:
@@ -371,10 +400,11 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
 
     try:
         coll = client.get_collection(division_id)
+        coll.delete(where={"division": division_id})
         pass 
     except Exception:
         pass
-
+    #2. PROSES EKSTRAKSI PDF
     text_content = ""
     try:
         reader = PdfReader(file_path)
