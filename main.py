@@ -30,8 +30,8 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
 DB_FILE = "divisions_db.json"
 def slugify(text: str) -> str:
     """Mengubah string menjadi format ID yang aman (contoh: 'Human Capital' -> 'human_capital')"""
-    text = text.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = text.strip().upper()
+    text = re.sub(r"[^A-Z0-9]+", "_", text)
     return text.strip("_") or "unnamed_division"
 
 def load_divisions_from_db():
@@ -174,7 +174,7 @@ else:
     existing_ids = [d["id"] for d in DIVISIONS]
     for cid in valid_ids:
         if cid not in existing_ids:
-            new_entry = {"id": cid, "name": cid.replace("_", " ").title(), "description": ""}
+            new_entry = {"id": cid, "name": cid.replace("_", " ").upper(), "description": ""}
             DIVISIONS.append(new_entry)
             
     save_divisions_to_db(DIVISIONS)
@@ -332,11 +332,11 @@ async def list_divisions():
 @app.post("/division")
 async def create_division(data: NewDivision):
     global DIVISIONS
-    
+
     div_id = slugify(data.name)
 
     if any(d["id"] == div_id for d in DIVISIONS):
-        raise HTTPException(status_code=400, detail="Divisi sudah ada")
+        raise HTTPException(status_code=400, detail=f"Divisi {div_id} sudah ada")
 
     try:
         try:
@@ -393,7 +393,7 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
 
     if not os.path.exists("data"):
         os.makedirs("data")
-        
+
     file_path = os.path.join("data", file.filename)
     content_bytes = await file.read()
     with open(file_path, "wb") as f:
@@ -401,7 +401,8 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
 
     try:
         coll = client.get_collection(division_id)
-        pass 
+        coll.delete(where={"division": division_id})
+        pass
     except Exception:
         pass
 
