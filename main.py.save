@@ -29,9 +29,9 @@ CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
 DB_FILE = "divisions_db.json"
 def slugify(text: str) -> str:
-    """Mengubah string menjadi singkatan/huruf depan (contoh: 'Human Capital' -> 'HC')"""
+    
     text = text.strip().upper()
-    text = "".join(w[0] for w in re.findall(r"[A-Z0-9]+", text))
+    text = re.sub(r"[^A-Z0-9]+", "_", text)
     return text.strip("_") or "unnamed_division"
 
 def load_divisions_from_db():
