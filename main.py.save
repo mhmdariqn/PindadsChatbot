@@ -29,9 +29,10 @@ CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
 DB_FILE = "divisions_db.json"
 def slugify(text: str) -> str:
-    text = text.strip().upper()  
-    text = re.sub(r"[^A-Z0-9]+", "_", text) 
-    return text.strip("_") or "UNNAMED_DIVISION"
+    
+    text = text.strip().upper()
+    text = re.sub(r"[^A-Z0-9]+", "_", text)
+    return text.strip("_") or "unnamed_division"
 
 def load_divisions_from_db():
     if os.path.exists(DB_FILE):
@@ -201,7 +202,7 @@ def get_dynamic_prompt_template(current_div_id: str):
     if not redirect_list_str:
         redirect_list_str = "(Tidak ada divisi lain yang tersedia saat ini)"
 
-    template_str = template_str = f"""
+    template_str = f"""
 Anda adalah asisten virtual profesional untuk PT Pindad di Divisi: {{current_div_id}}.
 Tugas Anda adalah menjawab pertanyaan pengguna dengan gaya bahasa natural, ramah, dan langsung pada intinya.
 
@@ -331,11 +332,11 @@ async def list_divisions():
 @app.post("/division")
 async def create_division(data: NewDivision):
     global DIVISIONS
-    
+
     div_id = slugify(data.name)
 
     if any(d["id"] == div_id for d in DIVISIONS):
-        raise HTTPException(status_code=400, detail=f"Divisi '{data.name}' sudah ada")
+        raise HTTPException(status_code=400, detail=f"Divisi {div_id} sudah ada")
 
     try:
         try:
@@ -401,10 +402,9 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     try:
         coll = client.get_collection(division_id)
         coll.delete(where={"division": division_id})
-        pass 
     except Exception:
         pass
-    #2. PROSES EKSTRAKSI PDF
+
     text_content = ""
     try:
         reader = PdfReader(file_path)
