@@ -384,6 +384,11 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
 
     file_path = os.path.join("data", file.filename)
     content_bytes = await file.read()
+
+    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+    if len(content_bytes) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Ukuran file melebihi batas maksimal 10 MB")
+
     with open(file_path, "wb") as f:
         f.write(content_bytes)
 
