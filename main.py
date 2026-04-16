@@ -27,6 +27,11 @@ CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
 CHROMA_TENANT = os.getenv("CHROMA_TENANT")
 CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
+
+# Optional env for max file upload limit in MB (defaults to 10)
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
+MAX_UPLOAD_SIZE = MAX_UPLOAD_MB * 1024 * 1024
+
 DB_FILE = "divisions_db.json"
 def slugify(text: str) -> str:
     text = text.strip().upper()  
@@ -385,9 +390,8 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     file_path = os.path.join("data", file.filename)
     content_bytes = await file.read()
 
-    MAX_SIZE = 10 * 1024 * 1024  # 10 MB
-    if len(content_bytes) > MAX_SIZE:
-        raise HTTPException(status_code=400, detail="Ukuran file melebihi batas maksimal 10 MB")
+    if len(content_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=400, detail=f"Ukuran file melebihi batas maksimal {MAX_UPLOAD_MB} MB")
 
     with open(file_path, "wb") as f:
         f.write(content_bytes)
