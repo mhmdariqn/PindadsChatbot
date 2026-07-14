@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Security, Depends, Header
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 import os
@@ -9,6 +9,10 @@ import re
 import json
 from datetime import datetime
 from pypdf import PdfReader
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+import hashlib
+import uuid
 
 # LlamaIndex & ChromaDB Imports
 import chromadb
@@ -26,7 +30,45 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
 CHROMA_TENANT = os.getenv("CHROMA_TENANT")
 CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "rahasia_admin")
+SEED_ADMIN_PASSWORD = os.getenv("ADMIN_SECRET", "rahasia_admin")
+
+USERS_DB_FILE = "users_db.json"
+ACTIVE_SESSIONS = {}  # session_token -> email
+
+def hash_string(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+def load_users():
+    if os.path.exists(USERS_DB_FILE):
+        try:
+            with open(USERS_DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_users(users):
+    try:
+        with open(USERS_DB_FILE, "w") as f:
+            json.dump(users, f, indent=4)
+    except Exception as e:
+        print(f"Gagal menyimpan users db: {e}")
+
+# Seeder
+def seed_users():
+    users = load_users()
+    if not users:
+        default_user = {
+            "email": "admin@pindad.com",
+            "password_hash": hash_string(SEED_ADMIN_PASSWORD),
+            "security_question": "Apa nama divisi utama PT Pindad?",
+            "security_answer_hash": hash_string("HCM")
+        }
+        users.append(default_user)
+        save_users(users)
+        print("Database pengguna di-seed secara otomatis.")
+
+seed_users()
 
 # Optional env for max file upload limit in MB (defaults to 10)
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
@@ -262,35 +304,63 @@ Answer:
 # ========================
 app = FastAPI(title="PINDAD Chatbot API")
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Menghalangi clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        # Mencegah MIME sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Memaksa koneksi HTTPS (HSTS)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Sembunyikan/override versi server asli
+        response.headers["Server"] = "Pindad-Chatbot-Gateway"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
+    allow_credentials=False, # Wildcard * + credentials = security risk
 )
 
 # Models
 class ChatRequest(BaseModel):
-    session_id: str
-    division: str
-    message: str
+    session_id: str = Field(..., max_length=128)
+    division: str = Field(..., max_length=64)
+    message: str = Field(..., max_length=4096)
 
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
 
 class NewDivision(BaseModel):
-    name: str
-    description: str = ""
+    name: str = Field(..., max_length=100)
+    description: str = Field("", max_length=500)
 
 class UpdateDivisionDescription(BaseModel):
-    description: str
+    description: str = Field(..., max_length=500)
 
 class NewFaq(BaseModel):
-    division_id: str
-    question: str
-    answer: str
+    division_id: str = Field(..., max_length=64)
+    question: str = Field(..., max_length=1000)
+    answer: str = Field(..., max_length=5000)
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., max_length=128)
+    password: str = Field(..., max_length=128)
+
+class ForgotPasswordQuestionRequest(BaseModel):
+    email: str = Field(..., max_length=128)
+
+class ResetPasswordRequest(BaseModel):
+    email: str = Field(..., max_length=128)
+    security_answer: str = Field(..., max_length=256)
+    new_password: str = Field(..., max_length=128)
 
 # Helper: Get Index
 def get_index_for_division(division_id: str) -> VectorStoreIndex:
@@ -309,20 +379,55 @@ def get_index_for_division(division_id: str) -> VectorStoreIndex:
     return index
 
 # Auth Helper
-def get_admin_token(x_admin_secret: str = Header(None)):
-    if x_admin_secret != ADMIN_SECRET:
+def get_admin_token(x_admin_token: str = Header(None)):
+    if not x_admin_token or x_admin_token not in ACTIVE_SESSIONS:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return True
+    return ACTIVE_SESSIONS[x_admin_token]
 
 # ========================
 # 7. ENDPOINTS
 # ========================
 
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    users = load_users()
+    pwd_hash = hash_string(req.password)
+    user = next((u for u in users if u["email"].lower() == req.email.lower() and u["password_hash"] == pwd_hash), None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Email atau password salah")
+    
+    token = str(uuid.uuid4())
+    ACTIVE_SESSIONS[token] = req.email.lower()
+    return {"token": token}
+
+@app.post("/api/auth/forgot-password/question")
+async def auth_forgot_password_question(req: ForgotPasswordQuestionRequest):
+    users = load_users()
+    user = next((u for u in users if u["email"].lower() == req.email.lower()), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="Email tidak terdaftar")
+    return {"security_question": user["security_question"]}
+
+@app.post("/api/auth/forgot-password/reset")
+async def auth_forgot_password_reset(req: ResetPasswordRequest):
+    users = load_users()
+    user = next((u for u in users if u["email"].lower() == req.email.lower()), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="Email tidak terdaftar")
+    
+    ans_hash = hash_string(req.security_answer.strip())
+    if user["security_answer_hash"] != ans_hash:
+        raise HTTPException(status_code=400, detail="Jawaban pertanyaan keamanan salah")
+    
+    user["password_hash"] = hash_string(req.new_password)
+    save_users(users)
+    return {"detail": "Password berhasil direset"}
+
 @app.get("/divisions")
 async def list_divisions():
     return DIVISIONS
 
-@app.post("/division")
+@app.post("/division", dependencies=[Depends(get_admin_token)])
 async def create_division(data: NewDivision):
     global DIVISIONS
     
@@ -345,7 +450,7 @@ async def create_division(data: NewDivision):
 
     return new_entry
 
-@app.put("/division/{div_id}")
+@app.put("/division/{div_id}", dependencies=[Depends(get_admin_token)])
 async def update_division_description(div_id: str, data: UpdateDivisionDescription):
     global DIVISIONS
     div_found = None
@@ -361,7 +466,7 @@ async def update_division_description(div_id: str, data: UpdateDivisionDescripti
     save_divisions_to_db(DIVISIONS)
     return div_found
 
-@app.delete("/division/{div_id}")
+@app.delete("/division/{div_id}", dependencies=[Depends(get_admin_token)])
 async def delete_division(div_id: str):
     global DIVISIONS, FAQS, DOCUMENTS
     try:
@@ -378,16 +483,17 @@ async def delete_division(div_id: str):
     save_documents_to_db(DOCUMENTS)
     return {"detail": "Divisi dihapus"}
 
-@app.post("/upload/{division_id}")
+@app.post("/upload/{division_id}", dependencies=[Depends(get_admin_token)])
 async def upload_file(division_id: str, file: UploadFile = File(...)):
     global DOCUMENTS
-    if not file.filename.endswith(".pdf"):
+    safe_filename = os.path.basename(file.filename)
+    if not safe_filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Hanya file .pdf yang didukung")
 
     if not os.path.exists("data"):
         os.makedirs("data")
 
-    file_path = os.path.join("data", file.filename)
+    file_path = os.path.join("data", safe_filename)
     content_bytes = await file.read()
 
     if len(content_bytes) > MAX_UPLOAD_SIZE:
@@ -399,9 +505,9 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     try:
         coll = client.get_collection(division_id)
         coll.delete(where={"division": division_id})
-        pass 
     except Exception:
         pass
+        
     #2. PROSES EKSTRAKSI PDF
     text_content = ""
     try:
@@ -416,12 +522,12 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     if not text_content.strip():
         raise HTTPException(status_code=400, detail="PDF kosong/gambar scan")
 
-    doc = Document(text=text_content, metadata={"filename": file.filename, "division": division_id})
+    doc = Document(text=text_content, metadata={"filename": safe_filename, "division": division_id})
     index = get_index_for_division(division_id)
     index.insert(doc)
 
     DOCUMENTS.append({
-        "filename": file.filename,
+        "filename": safe_filename,
         "division_id": division_id,
         "uploaded_at": datetime.now().isoformat()
     })
@@ -451,7 +557,7 @@ async def get_faqs():
         })
     return FAQS + doc_faqs
 
-@app.post("/faq")
+@app.post("/faq", dependencies=[Depends(get_admin_token)])
 async def add_faq(data: NewFaq):
     global FAQ_COUNTER, FAQS
     faq = {
@@ -548,4 +654,4 @@ async def chat(req: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, server_header=False)

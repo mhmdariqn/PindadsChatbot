@@ -23,5 +23,35 @@
         "id": "K3LH",
         "name": "Penjaminan Mutu / Quality Assurance",
         "description": "Menangani kebijakan mutu perusahaan, penerapan Keselamatan dan Kesehatan Kerja (K3), serta pengelolaan aspek lingkungan hidup. Divisi ini bertanggung jawab atas integrasi sistem manajemen mutu yang tersertifikasi internasional, meliputi ISO 9001:2015, ISO 14001:2015, dan ISO 45001:2018. PIC terkait adalah Divisi Penjaminan Mutu (Quality Assurance)."
+    },
+    {
+        "id": "REKRUTMEN_PEGAWAI__SDM",
+        "name": "REKRUTMEN PEGAWAI  SDM",
+        "description": ""
+    },
+    {
+        "id": "PEMASARAN__PENJUALAN__DAN_MAINTENANCE_REPAIR_OVERHAUL",
+        "name": "PEMASARAN  PENJUALAN  DAN MAINTENANCE REPAIR OVERHAUL",
+        "description": ""
+    },
+    {
+        "id": "TANGGUNG_JAWAB_SOSIAL",
+        "name": "TANGGUNG JAWAB SOSIAL",
+        "description": ""
+    },
+    {
+        "id": "PENJAMINAN_MUTU_QUALITY_ASSURANCE_K3LH",
+        "name": "PENJAMINAN MUTU QUALITY ASSURANCE K3LH",
+        "description": ""
+    },
+    {
+        "id": "RANTAI_PASOK_SUPPLY_CHAIN",
+        "name": "RANTAI PASOK SUPPLY CHAIN",
+        "description": ""
+    },
+    {
+        "id": "PRODUK_PERTAHANAN_PINDAD",
+        "name": "PRODUK PERTAHANAN PINDAD",
+        "description": ""
     }
 ]
