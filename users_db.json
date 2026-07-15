@@ -1,0 +1,8 @@
+[
+    {
+        "email": "admin@pindad.com",
+        "password_hash": "83258d31cd319b1bc145de93e17ac6999100fc0a666c85328f49e85c69d4ba35",
+        "security_question": "Apa nama divisi utama PT Pindad?",
+        "security_answer_hash": "4ac38c3800a3b099d57dc4460b04a8c4d3f67329135faf85a1061e284dd3b9f0"
+    }
+]

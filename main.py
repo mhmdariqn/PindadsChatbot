@@ -13,17 +13,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 import hashlib
 import uuid
-
-# LlamaIndex & ChromaDB Imports
 import chromadb
 from llama_index.core import VectorStoreIndex, StorageContext, Document, PromptTemplate
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.mistralai import MistralAI
 
-# ========================
-# 1. SETUP ENV & CONSTANTS
-# ========================
 load_dotenv()
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
@@ -33,7 +28,7 @@ CHROMA_DATABASE = os.getenv("CHROMA_DATABASE")
 SEED_ADMIN_PASSWORD = os.getenv("ADMIN_SECRET", "rahasia_admin")
 
 USERS_DB_FILE = "users_db.json"
-ACTIVE_SESSIONS = {}  # session_token -> email
+ACTIVE_SESSIONS = {}
 
 def hash_string(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -54,7 +49,6 @@ def save_users(users):
     except Exception as e:
         print(f"Gagal menyimpan users db: {e}")
 
-# Seeder
 def seed_users():
     users = load_users()
     if not users:
@@ -70,7 +64,6 @@ def seed_users():
 
 seed_users()
 
-# Optional env for max file upload limit in MB (defaults to 10)
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MAX_UPLOAD_SIZE = MAX_UPLOAD_MB * 1024 * 1024
 
@@ -175,9 +168,6 @@ def save_faqs_to_db(data):
 if not MISTRAL_API_KEY or not CHROMA_API_KEY:
     raise ValueError("MISTRAL_API_KEY dan CHROMA_API_KEY wajib diisi di .env")
 
-# ========================
-# 3. INITIALIZE CLIENTS
-# ========================
 llm = MistralAI(api_key=MISTRAL_API_KEY, model="mistral-large-latest")
 embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
 
@@ -191,13 +181,8 @@ except Exception as e:
     print(f"Warning: Koneksi ChromaDB gagal saat startup. {e}")
     client = None
 
-# ========================
-# 4. SYNC DATA (STARTUP)
-# ========================
-# Load dari JSON Local
 saved_divisions = load_divisions_from_db()
 
-# Ambil list ID dari Chroma (Sumber Kebenaran Fisik)
 try:
     _chroma_colls = client.list_collections() if client else []
     valid_ids = [c.name for c in _chroma_colls]
@@ -206,17 +191,12 @@ except Exception:
 
 DIVISIONS = []
 
-# --- BAGIAN INI DIUBAH AGAR MULAI DARI NOL ---
 if not saved_divisions and not valid_ids:
-    # Mulai dengan kosong (User harus input manual)
     DIVISIONS = []
     save_divisions_to_db(DIVISIONS)
 else:
-    # 1. Prioritaskan data JSON (karena ada nama panjang & deskripsi)
     for div in saved_divisions:
         DIVISIONS.append(div)
-    
-    # 2. Cek "Orphaned" Collections di Chroma (Ada di cloud, gak ada di JSON)
     existing_ids = [d["id"] for d in DIVISIONS]
     for cid in valid_ids:
         if cid not in existing_ids:
@@ -225,7 +205,6 @@ else:
             
     save_divisions_to_db(DIVISIONS)
 
-# Global Variables
 FAQS: List[Dict] = load_faqs_from_db()
 DOCUMENTS: List[Dict] = load_documents_from_db()
 FAQ_COUNTER = (max([f["id"] for f in FAQS]) + 1) if FAQS else 1
@@ -233,28 +212,17 @@ UNANSWERED: List[Dict] = load_unanswered_from_db()
 UNANSWERED_COUNTER = (max([u["id"] for u in UNANSWERED]) + 1) if UNANSWERED else 1
 MONTHLY_HITS = load_stats_from_db()
 
-# ========================
-# 5. PROMPT TEMPLATE
-# ========================
-# ========================
-# 5. PROMPT TEMPLATE (DIMODIFIKASI)
-# ========================
 def get_dynamic_prompt_template(current_div_id: str):
-    # Ambil divisi lain selain divisi saat ini
     other_divisions = [d for d in DIVISIONS if d["id"] != current_div_id]
     
-    # Buat string daftar divisi beserta deskripsinya (KEYWORD DIAMBIL DARI SINI)
     redirect_list_str = ""
     for d in other_divisions:
-        # Fallback jika deskripsi kosong
         desc = d.get("description", "").strip()
         if not desc:
             desc = "Tidak ada deskripsi spesifik."
             
-        # Format: - [Nama Divisi]: [Deskripsi/Keywords] -> [[REDIRECT:ID]]
         redirect_list_str += f"- Divisi {d['name']} (Lingkup: {desc}) -> [[REDIRECT:{d['id']}]]\n"
 
-    # Jika tidak ada divisi lain
     if not redirect_list_str:
         redirect_list_str = "(Tidak ada divisi lain yang tersedia saat ini)"
 
@@ -299,22 +267,15 @@ Answer:
     """
     return PromptTemplate(template_str)
 
-# ========================
-# 6. FASTAPI APP SETUP
-# ========================
 app = FastAPI(title="PINDAD Chatbot API")
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        # Menghalangi clickjacking
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
-        # Mencegah MIME sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
-        # Memaksa koneksi HTTPS (HSTS)
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Sembunyikan/override versi server asli
         response.headers["Server"] = "Pindad-Chatbot-Gateway"
         return response
 
@@ -325,10 +286,9 @@ app.add_middleware(
     allow_origins=["*"], 
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False, # Wildcard * + credentials = security risk
+    allow_credentials=False,
 )
 
-# Models
 class ChatRequest(BaseModel):
     session_id: str = Field(..., max_length=128)
     division: str = Field(..., max_length=64)
@@ -362,7 +322,6 @@ class ResetPasswordRequest(BaseModel):
     security_answer: str = Field(..., max_length=256)
     new_password: str = Field(..., max_length=128)
 
-# Helper: Get Index
 def get_index_for_division(division_id: str) -> VectorStoreIndex:
     try:
         coll = client.get_collection(division_id)
@@ -378,15 +337,10 @@ def get_index_for_division(division_id: str) -> VectorStoreIndex:
     )
     return index
 
-# Auth Helper
 def get_admin_token(x_admin_token: str = Header(None)):
     if not x_admin_token or x_admin_token not in ACTIVE_SESSIONS:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return ACTIVE_SESSIONS[x_admin_token]
-
-# ========================
-# 7. ENDPOINTS
-# ========================
 
 @app.post("/api/auth/login")
 async def auth_login(req: LoginRequest):
@@ -508,7 +462,6 @@ async def upload_file(division_id: str, file: UploadFile = File(...)):
     except Exception:
         pass
         
-    #2. PROSES EKSTRAKSI PDF
     text_content = ""
     try:
         reader = PdfReader(file_path)
@@ -596,7 +549,6 @@ async def get_unanswered():
 async def chat(req: ChatRequest):
     global UNANSWERED, UNANSWERED_COUNTER, MONTHLY_HITS
 
-    # 1. Update Statistik Hits Bulanan
     current_month = datetime.now().strftime("%b") 
     if current_month in MONTHLY_HITS:
         MONTHLY_HITS[current_month] += 1
@@ -605,13 +557,10 @@ async def chat(req: ChatRequest):
     
     save_stats_to_db(MONTHLY_HITS)
 
-    # 2. Siapkan Index & Engine
     division_id = req.division
     index = get_index_for_division(division_id)
     dynamic_prompt = get_dynamic_prompt_template(division_id)
     query_engine = index.as_query_engine(llm=llm, text_qa_template=dynamic_prompt)
-
-    # 3. Eksekusi Query
     answer = ""
     try:
         res = query_engine.query(req.message)
@@ -620,7 +569,6 @@ async def chat(req: ChatRequest):
         print(f"Error LLM: {e}")
         answer = "Mohon maaf, terjadi gangguan pada sistem AI kami."
     
-    # 4. Deteksi Kegagalan atau Redirect
     ans_lower = answer.lower()
     failure_keywords = [
         "mohon maaf", "tidak dapat dipahami", "informasi spesifik", 
@@ -630,9 +578,7 @@ async def chat(req: ChatRequest):
     
     is_redirect = "[[redirect:" in ans_lower
     is_failure = any(k in ans_lower for k in failure_keywords)
-    
-    # LOGIKA: APPEND ALWAYS (Tanpa Cek Duplikat)
-    # Jika gagal atau redirect, langsung buat entry baru.
+
     if is_failure or is_redirect:
         
         new_entry = {
@@ -641,13 +587,12 @@ async def chat(req: ChatRequest):
             "question": req.message,    
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "status": "Redirected" if is_redirect else "Unanswered",
-            "hit_count": 1 # Selalu 1, karena setiap kejadian dicatat sebagai baris baru
+            "hit_count": 1 
         }
         
         UNANSWERED.append(new_entry)
         UNANSWERED_COUNTER += 1
-        
-        # Simpan ke database JSON agar aman saat restart
+
         save_unanswered_to_db(UNANSWERED)
     
     return ChatResponse(session_id=req.session_id, answer=answer)
